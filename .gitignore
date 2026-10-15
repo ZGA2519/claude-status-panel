@@ -1,0 +1,4 @@
+.DS_Store
+# written by Claude Code when it loads a plugin from its folder
+.claude-plugin/types/
+plugins/*/.claude-plugin/types/

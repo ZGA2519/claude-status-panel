@@ -1,0 +1,9 @@
+{
+  "name": "status-panel",
+  "version": "0.17.1",
+  "description": "Side panel: working directory, file read/write counts, and the agent's recent tool calls with diffs and readable output",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "phuripatk"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "claude-status-panel",
+  "description": "A live status side panel for Claude Code, plus a Catppuccin Mocha theme",
+  "owner": {
+    "name": "phuripatk"
+  },
+  "plugins": [
+    {
+      "name": "status-panel",
+      "source": "./plugins/status-panel",
+      "description": "Side panel: session summary, statistics, activity with diffs, agents, and a dancing mascot"
+    },
+    {
+      "name": "catppuccin-mocha",
+      "source": "./plugins/catppuccin-mocha",
+      "description": "Catppuccin Mocha colour theme for Claude Code"
+    }
+  ]
+}

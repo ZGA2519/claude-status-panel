@@ -1,0 +1,8 @@
+{
+  "name": "catppuccin-mocha",
+  "version": "0.1.0",
+  "description": "Catppuccin Mocha colour theme for Claude Code (pick it in /theme)",
+  "author": {
+    "name": "phuripatk"
+  }
+}
