@@ -22,16 +22,16 @@ A side panel for [Claude Code](https://claude.com/claude-code) that shows what t
 In Claude Code (terminal), at the prompt:
 
 ```
-/plugin install status-panel --marketplace <owner>/claude-status-panel
-/plugin install catppuccin-mocha --marketplace <owner>/claude-status-panel
+/plugin install status-panel --marketplace ZGA2519/claude-status-panel
+/plugin install catppuccin-mocha --marketplace ZGA2519/claude-status-panel
 ```
 
-Replace `<owner>` with the GitHub account that hosts this repository. Answer `y` to add the marketplace and pick a scope (user = every session).
+Answer `y` to add the marketplace and pick a scope (user = every session).
 
 Or from a shell:
 
 ```bash
-claude plugin install status-panel --marketplace <owner>/claude-status-panel
+claude plugin install status-panel --marketplace ZGA2519/claude-status-panel
 ```
 
 Then:
@@ -56,7 +56,7 @@ To ship a default for everyone, rebuild the plugin's built-in asset from a GIF y
 
 ```bash
 cd plugins/status-panel
-python3 scripts/build-tom.py path/to/mascot.gif   # rewrites hooks/tom-assets.ts
+python3 scripts/build-mascot.py path/to/mascot.gif   # rewrites hooks/mascot-assets.ts
 ```
 
 ## Develop
@@ -69,4 +69,4 @@ claude plugin validate .                         # marketplace + manifests + hoo
 
 `tsconfig.json` extends the types Claude Code writes into `.claude-plugin/types/` the first time it loads the plugin from its folder (as above); they are git-ignored.
 
-The GIF converter lives in `scripts/build-tom.py`; the panel runs a copy of it from `hooks/build-tom-script.ts`. After editing the script, refresh that copy with `python3 scripts/build-tom.py --emit-ts`.
+The GIF converter lives in `scripts/build-mascot.py`; the panel runs a copy of it from `hooks/build-mascot-script.ts`. After editing the script, refresh that copy with `python3 scripts/build-mascot.py --emit-ts`.

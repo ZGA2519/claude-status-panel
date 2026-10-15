@@ -5,8 +5,8 @@ import type { AgentRun, Call, MascotAssets, Prompt, SessionSummary, Stats, Tab }
 import { agentRun, clip, describe, fmtDur, fmtNum, matches, prettyTool } from './format'
 import { emojiOf, iconFor, svgOf } from './icons'
 import type { IconKey } from './icons'
-import { BUILD_TOM_PY } from './build-tom-script'
-import { DEFAULT_MASCOT, mascot, tomText } from './mascot'
+import { BUILD_MASCOT_PY } from './build-mascot-script'
+import { DEFAULT_MASCOT, mascot, mascotText } from './mascot'
 
 const PANE = 'status-panel'
 const KEEP = 50
@@ -27,7 +27,7 @@ const tab = atom({ plugin: 'status-panel', key: 'tab' } as const, 'summary')
 const NO_SUMMARY: SessionSummary = { text: '', prompt: 0, updatedAt: 0, isUpdating: false }
 const summary = atom({ plugin: 'status-panel', key: 'summary' } as const, NO_SUMMARY)
 const mascotRev = atom({ plugin: 'status-panel', key: 'mascotRev' } as const, 0) // bumped when the mascot changes
-const beat = atom({ plugin: 'status-panel', key: 'beat' } as const, 0) // CLI Tom's frame; only the CLI view reads it
+const beat = atom({ plugin: 'status-panel', key: 'beat' } as const, 0) // the CLI mascot's frame; only the CLI view reads it
 
 const TINT = { running: 'warning', done: 'success', error: 'error' } as const
 const BADGE = { running: '● RUNNING', done: '✓ DONE', error: '✕ FAILED' } as const
@@ -42,8 +42,8 @@ function settleAgent(was: AgentRun, now: AgentRun, isError: boolean): AgentRun {
 }
 const addOnce = (path: string) => (list: string[]) => (list.includes(path) ? list : [...list, path])
 
-// CLI Tom: the render hook says whether the text Tom is on screen and whether to dance; a timer steps the beat.
-let isTextTomShown = false
+// CLI mascot: the render hook says whether the text mascot is on screen and whether to dance; a timer steps the beat.
+let isTextMascotShown = false
 let isDancing = false
 // Summary: turn.complete marks it due; a session.start timer writes it, so no prompt waits on the model.
 // A prompt's transcript row and its turn.start can come in either order: whichever is first waits for the other.
@@ -92,7 +92,7 @@ async function summarize($: EngineInterface): Promise<void> {
   }
 }
 
-// An uploaded mascot (kept in $.store across sessions); Tom when none.
+// An uploaded mascot (kept in $.store across sessions); the built-in default, if any, when none.
 let custom: MascotAssets | undefined
 const isMascot = (v: unknown): v is MascotAssets =>
   typeof v === 'object' && v !== null && typeof (v as MascotAssets).gif === 'string' && Array.isArray((v as MascotAssets).raster?.frames)
@@ -109,7 +109,7 @@ export const register: Register = on => {
     await update($, stats, s => (s.startedAt ? s : { ...s, startedAt: now }))
     // ponytail: 4 redraws a second of the CLI pane while working, 2 GIF frames a step; lower if a slow terminal lags
     $.clock.every(250, () => {
-      if (!isTextTomShown || !isDancing) return
+      if (!isTextMascotShown || !isDancing) return
       void update($, beat, n => n + 2).catch(() => {})
     })
     void $.ui.open({ id: PANE, title: 'Status' })
@@ -279,7 +279,7 @@ export const register: Register = on => {
       await update($, query, () => '')
       await update($, limit, () => 1)
     }
-    isTextTomShown = isCli && pet !== undefined
+    isTextMascotShown = isCli && pet !== undefined
     isDancing = isBusy
     const step = isCli && isBusy ? await read($, beat) : 0 // read only here, so the desktop never redraws per beat
     const toggle = (id: string) => update($, pinned, ids => (ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]))
@@ -377,7 +377,7 @@ export const register: Register = on => {
       void $.ui.toast('Converting your GIF…')
       // the converter rides in the plugin's code (fed to `python3 -`), so no install folder is assumed
       const built = await $.process
-        .run(['python3', '-', pick.stdout.trim(), '--json'], { env, stdin: BUILD_TOM_PY, timeoutMs: 120_000 })
+        .run(['python3', '-', pick.stdout.trim(), '--json'], { env, stdin: BUILD_MASCOT_PY, timeoutMs: 120_000 })
         .catch(err => ({ exitCode: 1, stdout: '', stderr: String(err) }))
       let assets: unknown
       try {
@@ -693,12 +693,12 @@ export const register: Register = on => {
               />
             ) : isCli ? (
               <Box flexDirection="column">
-                {tomText(step, pet).map(row => (
+                {mascotText(step, pet).map(row => (
                   <Text>{row.map(span => (span.color ? <Text color={span.color} backgroundColor={span.bg}>{span.text}</Text> : span.text))}</Text>
                 ))}
               </Box>
             ) : (
-              <Text>🦎</Text>
+              <Text color="claude">✻</Text>
             )}
           </Box>
           <Box flexDirection="column" flexGrow={1}>

@@ -1,16 +1,16 @@
-// The panel's mascot: a GIF made into panel assets by scripts/build-tom.py (built-in default, or one the person uploads).
+// The panel's mascot: a GIF made into panel assets by scripts/build-mascot.py (built-in default, or one the person uploads).
 // Desktop: the GIF inside an SVG (still PNG while idle), drawn as a plain image: the GIF animates there,
 // while the sandboxed frame `isInteractive` asks for does not load it. Terminal: the half-block cell frames
 // drawn as coloured Text (the CLI's Raster element paints nothing there).
 import type { MascotAssets } from '../types'
-import { TOM_GIF, TOM_RASTER, TOM_SIZE, TOM_STILL } from './tom-assets'
+import { MASCOT_GIF, MASCOT_RASTER, MASCOT_SIZE, MASCOT_STILL } from './mascot-assets'
 
-/** The built-in mascot from tom-assets.ts (Tom here); none when that file is the blank one. An uploaded one has the same shape. */
-export const DEFAULT_MASCOT: MascotAssets | undefined = TOM_GIF
-  ? { gif: TOM_GIF, still: TOM_STILL, ...TOM_SIZE, raster: { ...TOM_RASTER, frames: [...TOM_RASTER.frames] } }
+/** The built-in mascot from mascot-assets.ts; none when that file is the blank one. An uploaded one has the same shape. */
+export const DEFAULT_MASCOT: MascotAssets | undefined = MASCOT_GIF
+  ? { gif: MASCOT_GIF, still: MASCOT_STILL, ...MASCOT_SIZE, raster: { ...MASCOT_RASTER, frames: [...MASCOT_RASTER.frames] } }
   : undefined
 
-export { TOM_RASTER, TOM_SIZE }
+export { MASCOT_RASTER, MASCOT_SIZE }
 
 /** A run of same-coloured cells: `color` paints the glyph, `bg` the cell; neither for blank cells. */
 export type Span = { text: string; color?: string; bg?: string }
@@ -46,7 +46,7 @@ function decode(b64: string, raster: MascotAssets['raster']): Span[][] {
 
 const decoded = new WeakMap<MascotAssets, Span[][][]>()
 /** Frame `i` (wrapping) of mascot `m` as rows of spans; decoded once per mascot, on first use. */
-export const tomText = (i: number, m: MascotAssets): Span[][] => {
+export const mascotText = (i: number, m: MascotAssets): Span[][] => {
   let frames = decoded.get(m)
   if (!frames) decoded.set(m, (frames = m.raster.frames.map(f => decode(f, m.raster))))
   return frames[i % frames.length] ?? []

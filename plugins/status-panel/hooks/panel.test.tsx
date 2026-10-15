@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { describe, human, matches, patchToDiff } from './format'
-import { DEFAULT_MASCOT, mascot, tomText } from './mascot'
+import { DEFAULT_MASCOT, mascot, mascotText } from './mascot'
 import type { MascotAssets } from '../types'
 
 const PANE = {
@@ -28,7 +28,7 @@ test('the mascot: the GIF while dancing, its still while idle, block art for the
   expect(mascot(true, PET)).toContain('data:image/gif;base64,R0lGODlh')
   expect(mascot(false, PET)).toContain('data:image/png;base64,iVBORw0K')
   expect(mascot(true, PET).length).toBeLessThan(131072) // Svg source limit
-  expect(tomText(0, PET)).toEqual([[{ text: '▀', color: '#d97757' }, { text: ' ' }]])
+  expect(mascotText(0, PET)).toEqual([[{ text: '▀', color: '#d97757' }, { text: ' ' }]])
   if (DEFAULT_MASCOT) for (const f of DEFAULT_MASCOT.raster.frames) expect(atob(f).length).toBe(DEFAULT_MASCOT.raster.columns * DEFAULT_MASCOT.raster.rows * 12)
 })
 

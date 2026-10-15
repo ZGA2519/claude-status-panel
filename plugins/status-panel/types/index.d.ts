@@ -29,7 +29,7 @@ export type AgentRun = {
   model?: string
 }
 
-/** A mascot made by scripts/build-tom.py --json from a GIF the person uploaded. */
+/** A mascot made by scripts/build-mascot.py --json from a GIF the person uploaded. */
 export type MascotAssets = {
   gif: string
   still: string
