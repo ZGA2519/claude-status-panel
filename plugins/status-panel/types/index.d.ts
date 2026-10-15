@@ -78,6 +78,10 @@ export type Stats = {
   tokensIn: number
   tokensOut: number
   startedAt: number
+  /** Per file, relative to the working directory: times read. Absent in a session started before 0.18. */
+  byRead?: Record<string, number>
+  /** Per file: times edited or written, and the lines those changed. */
+  byWrite?: Record<string, { n: number; adds: number; dels: number }>
 }
 
 export type Tab = 'summary' | 'stats' | 'activity' | 'agents'
@@ -86,8 +90,6 @@ declare module 'claude-code' {
   interface PluginState {
     'status-panel': {
       calls: Call[]
-      read: string[]
-      written: string[]
       pinned: string[]
       isWorking: boolean
       query: string

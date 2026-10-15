@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { AgentRun, Call, MascotAssets, Prompt, SessionSummary, Stats, Tab } from '../types'
-import { agentRun, clip, describe, fmtDur, fmtNum, matches, prettyTool } from './format'
+import { agentRun, clip, describe, fmtDur, fmtNum, matches, prettyTool, rel } from './format'
 import { emojiOf, iconFor, svgOf } from './icons'
 import type { IconKey } from './icons'
 import { BUILD_MASCOT_PY } from './build-mascot-script'
@@ -13,8 +13,6 @@ const KEEP = 50
 const NO_STATS: Stats = { calls: 0, failed: 0, ms: 0, adds: 0, dels: 0, subagent: 0, byTool: {}, tokensIn: 0, tokensOut: 0, startedAt: 0 }
 
 const calls = atom({ plugin: 'status-panel', key: 'calls' } as const, [])
-const filesRead = atom({ plugin: 'status-panel', key: 'read' } as const, [])
-const filesWritten = atom({ plugin: 'status-panel', key: 'written' } as const, [])
 const pinned = atom({ plugin: 'status-panel', key: 'pinned' } as const, [])
 const working = atom({ plugin: 'status-panel', key: 'isWorking' } as const, false)
 const stats = atom({ plugin: 'status-panel', key: 'stats' } as const, NO_STATS)
@@ -40,7 +38,6 @@ function settleAgent(was: AgentRun, now: AgentRun, isError: boolean): AgentRun {
   if (now.launched) return { ...merged, state: was.state === 'running' || !was.state ? 'running' : was.state, result: was.result } // runs on in the background
   return { ...merged, state: was.state === 'done' ? 'done' : isError ? 'error' : 'done', ms: was.ms }
 }
-const addOnce = (path: string) => (list: string[]) => (list.includes(path) ? list : [...list, path])
 
 // CLI mascot: the render hook says whether the text mascot is on screen and whether to dance; a timer steps the beat.
 let isTextMascotShown = false
@@ -206,20 +203,27 @@ export const register: Register = on => {
         c.id === id ? { ...c, ...done, agent: c.agent && settleAgent(c.agent, agentRun(input, res), isError) } : c,
       ),
     )
-    await update($, stats, s => ({
-      ...s,
-      calls: s.calls + 1,
-      failed: s.failed + (isError ? 1 : 0),
-      ms: s.ms + ms,
-      adds: s.adds + (done.adds ?? 0),
-      dels: s.dels + (done.dels ?? 0),
-      subagent: s.subagent + (agentId ? 1 : 0),
-      byTool: { ...s.byTool, [name]: (s.byTool[name] ?? 0) + 1 },
-    }))
-
-    const path = 'file_path' in input ? String(input.file_path) : ''
-    if (!isError && path && name === 'Read') await update($, filesRead, addOnce(path))
-    if (!isError && path && (name === 'Edit' || name === 'Write')) await update($, filesWritten, addOnce(path))
+    // per file, relative to the working directory: reads, and edits/writes with the lines they changed
+    const path = !isError && 'file_path' in input ? rel(String(input.file_path), cwd) : ''
+    const isRead = path !== '' && name === 'Read'
+    const isWrite = path !== '' && (name === 'Edit' || name === 'Write')
+    await update($, stats, s => {
+      const reads = s.byRead ?? {} // absent in a session started before 0.18
+      const writes = s.byWrite ?? {}
+      const was = writes[path] ?? { n: 0, adds: 0, dels: 0 }
+      return {
+        ...s,
+        calls: s.calls + 1,
+        failed: s.failed + (isError ? 1 : 0),
+        ms: s.ms + ms,
+        adds: s.adds + (done.adds ?? 0),
+        dels: s.dels + (done.dels ?? 0),
+        subagent: s.subagent + (agentId ? 1 : 0),
+        byTool: { ...s.byTool, [name]: (s.byTool[name] ?? 0) + 1 },
+        byRead: isRead ? { ...reads, [path]: (reads[path] ?? 0) + 1 } : reads,
+        byWrite: isWrite ? { ...writes, [path]: { n: was.n + 1, adds: was.adds + (done.adds ?? 0), dels: was.dels + (done.dels ?? 0) } } : writes,
+      }
+    })
 
     return res
   }).catch(($, e, next) => next(e)) // ponytail: an observer never blocks a tool; next(e) replays if already run
@@ -245,14 +249,12 @@ export const register: Register = on => {
     const isCli = e.surface === 'terminal'
     const Input = 'Input' in els ? els.Input : undefined
     const Client = 'Client' in els ? els.Client : undefined
-    const [cwd, model, turns, now, list, r, w, pins, isWorking, st, q, typed] = await Promise.all([
+    const [cwd, model, turns, now, list, pins, isWorking, st, q, typed] = await Promise.all([
       $.session.cwd(),
       $.session.model(),
       $.session.turns(),
       $.clock.now(),
       read($, calls),
-      read($, filesRead),
-      read($, filesWritten),
       read($, pinned),
       read($, working),
       read($, stats),
@@ -283,6 +285,8 @@ export const register: Register = on => {
     isDancing = isBusy
     const step = isCli && isBusy ? await read($, beat) : 0 // read only here, so the desktop never redraws per beat
     const toggle = (id: string) => update($, pinned, ids => (ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]))
+    const byRead = st.byRead ?? {}
+    const byWrite = st.byWrite ?? {}
     const topTools = Object.entries(st.byTool)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
@@ -292,15 +296,42 @@ export const register: Register = on => {
     const icon = (k: IconKey, size = 16) =>
       Svg ? <Svg source={svgOf(k)} alt={k} width={size} height={size} /> : <Text>{emojiOf(k)}</Text>
 
-    const tile = (k: IconKey, n: number, label: string) => (
-      <Box key={`tile-${label}`} flexDirection="column" flexGrow={1} borderStyle="round" borderDimColor paddingX={1}>
-        <Box flexDirection="row" gap={1} alignItems="center">
-          {icon(k, 14)}
-          <Text bold>{n}</Text>
+    // a statistics tile; its label opens the breakdown below the tiles
+    const tile = (k: IconKey, n: number, label: string, id: string) => {
+      const isOpen = pins.includes(id)
+      return (
+        <Box key={`tile-${label}`} flexDirection="column" flexGrow={1} borderStyle="round" borderColor={isOpen ? 'suggestion' : undefined} borderDimColor={!isOpen} paddingX={1}>
+          <Box flexDirection="row" gap={1} alignItems="center">
+            {icon(k, 14)}
+            <Text bold>{n}</Text>
+          </Box>
+          <Button key={id} plain dimColor={!isOpen} onPress={() => toggle(id)}>
+            {`${label} ${isOpen ? '▾' : '▸'}`}
+          </Button>
         </Box>
-        <Text dimColor>{label}</Text>
-      </Box>
-    )
+      )
+    }
+    /** What a tile counts, one row per file or tool, most first. */
+    const breakdown = (id: string, title: string, rows: { name: string; n: number; extra?: JSX.Element }[]) =>
+      pins.includes(id) && (
+        <Box key={`${id}-list`} flexDirection="column" marginTop={1}>
+          <Text dimColor bold>
+            {title}
+          </Text>
+          {rows.length === 0 && <Text dimColor>nothing yet</Text>}
+          {[...rows]
+            .sort((a, b) => b.n - a.n)
+            .map(x => (
+              <Box key={`${id}-${x.name}`} flexDirection="row" justifyContent="space-between" gap={2}>
+                <Text wrap="truncate-start">{x.name}</Text>
+                <Box flexDirection="row" gap={1} flexShrink={0}>
+                  {x.extra}
+                  <Text bold>×{x.n}</Text>
+                </Box>
+              </Box>
+            ))}
+        </Box>
+      )
 
     const row = (label: string, value: string | JSX.Element) => (
       <Box key={`row-${label}`} flexDirection="row" justifyContent="space-between" gap={2}>
@@ -465,10 +496,25 @@ export const register: Register = on => {
             </Text>
           </Box>
           <Box flexDirection="row" gap={1}>
-            {tile('read', r.length, 'files read')}
-            {tile('edit', w.length, 'files written')}
-            {tile('activity', st.calls, 'tool calls')}
+            {tile('read', Object.keys(byRead).length, 'files read', 'stats-read')}
+            {tile('edit', Object.keys(byWrite).length, 'files written', 'stats-written')}
+            {tile('activity', st.calls, 'tool calls', 'stats-tools')}
           </Box>
+          {breakdown('stats-read', 'FILES READ · times read', Object.entries(byRead).map(([name, n]) => ({ name, n })))}
+          {breakdown(
+            'stats-written',
+            'FILES WRITTEN · edits and writes',
+            Object.entries(byWrite).map(([name, v]) => ({
+              name,
+              n: v.n,
+              extra: (
+                <Text>
+                  <Text color="success">+{v.adds}</Text> <Text color="error">−{v.dels}</Text>
+                </Text>
+              ),
+            })),
+          )}
+          {breakdown('stats-tools', 'TOOL CALLS · by tool', Object.entries(st.byTool).map(([t, n]) => ({ name: prettyTool(t), n })))}
           {row(
             'Lines changed',
             <Text>

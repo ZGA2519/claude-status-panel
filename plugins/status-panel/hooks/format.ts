@@ -58,7 +58,7 @@ function output(text: string | undefined): Section {
   return { label: 'output', source: clip(raw) }
 }
 
-const rel = (path: string, cwd: string) => (path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path)
+export const rel = (path: string, cwd: string) => (path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path)
 
 function summaryOf(input: Record<string, unknown>, cwd: string): string {
   const first = Object.values(input).find(v => typeof v === 'string' && v !== '') as string | undefined

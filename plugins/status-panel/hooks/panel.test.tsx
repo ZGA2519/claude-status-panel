@@ -215,7 +215,7 @@ test('the pane lists calls newest first with diffs and readable output', async (
     expect(await ui.find({ type: 'Text', text: /DONE/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'STATISTICS' })).toBeUndefined() // statistics have their own tab
     await ui.press({ key: 'tab-stats' })
-    expect(await ui.find({ type: 'Text', text: 'files written' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', key: 'stats-written' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'STATISTICS' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Edit ×1/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'claude-test' })).toBeDefined()
@@ -250,6 +250,42 @@ test('the pane lists calls newest first with diffs and readable output', async (
     expect(await ui.find({ type: 'Button', key: 'mascot-upload' })).toBeDefined() // always visible under "Claude"
     if (surface === 'desktop') expect((await ui.findAll({ type: 'Svg' })).some(svg => svg.props.alt === 'Your mascot, idle')).toBe(!!DEFAULT_MASCOT)
     expect(await ui.find({ type: 'Code', text: /rows:\n {2}- id: 1/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('the statistics tiles open what was read, written and called, and how often', async ($, on) => {
+  mock.clock(on)
+  on('session.cwd', () => ({ value: '/p' }))
+  on('session.model', () => ({ value: 'claude-test' }))
+  on('session.turns', () => ({ value: 1 }))
+  on('tool.call', ($, e) =>
+    e.tool === 'Edit'
+      ? { result: { filePath: '/p/x.ts', structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 2, lines: ['-old', '+new', '+more'] }] }, text: 'ok' }
+      : { result: {}, text: 'ok' },
+  )
+  const tools = $.tool as unknown as { call: (input: object) => Promise<unknown> }
+  await tools.call({ tool: 'Read', file_path: '/p/src/a.ts' })
+  await tools.call({ tool: 'Read', file_path: '/p/src/a.ts' })
+  await tools.call({ tool: 'Read', file_path: '/p/b.md' })
+  await tools.call({ tool: 'Edit', file_path: '/p/x.ts', old_string: 'old', new_string: 'new\nmore' })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'status-panel', surface, ...PANE })
+    await ui.press({ key: 'tab-stats' })
+    expect(await ui.find({ type: 'Text', text: 'src/a.ts' })).toBeUndefined() // closed until pressed
+    await ui.press({ key: 'stats-read' })
+    const reads = await ui.findAll({ type: 'Text', text: /^(src\/a\.ts|b\.md)$/ })
+    expect(reads.map(t => t.text)).toEqual(['src/a.ts', 'b.md']) // relative to the working directory, most read first
+    expect(await ui.find({ type: 'Text', text: '×2' })).toBeDefined()
+    await ui.press({ key: 'stats-written' })
+    expect(await ui.find({ type: 'Text', text: 'x.ts' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '+2' })).toBeDefined()
+    await ui.press({ key: 'stats-tools' })
+    expect(await ui.find({ type: 'Text', text: 'TOOL CALLS · by tool' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Read' })).toBeDefined()
+    for (const k of ['stats-read', 'stats-written', 'stats-tools']) await ui.press({ key: k }) // closed again: shared by surfaces
+    expect(await ui.find({ type: 'Text', text: 'src/a.ts' })).toBeUndefined()
     await ui.unmount()
   }
 })
