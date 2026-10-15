@@ -213,11 +213,13 @@ test('the pane lists calls newest first with diffs and readable output', async (
     expect(await ui.find({ type: 'Text', text: '+1' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '−1' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /DONE/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'STATISTICS' })).toBeUndefined() // statistics have their own tab
+    expect(await ui.find({ type: 'Text', text: 'OVERVIEW' })).toBeUndefined() // statistics have their own tab
     await ui.press({ key: 'tab-stats' })
     expect(await ui.find({ type: 'Button', key: 'stats-written' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'STATISTICS' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /Edit ×1/ })).toBeDefined()
+    for (const title of ['OVERVIEW', 'CHANGES', 'TOOLS', 'SESSION']) expect(await ui.find({ type: 'Text', text: title })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '+1' })).toBeDefined() // lines added
+    expect(await ui.find({ type: 'Text', text: 'Most used' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'srv · list' })).toBeDefined() // a most-used tool, one row each
     expect(await ui.find({ type: 'Text', text: 'claude-test' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /idle · waiting/ })).toBeDefined()
     await ui.press({ key: 'tab-activity' })

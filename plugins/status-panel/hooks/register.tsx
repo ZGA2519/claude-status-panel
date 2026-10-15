@@ -287,11 +287,7 @@ export const register: Register = on => {
     const toggle = (id: string) => update($, pinned, ids => (ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]))
     const byRead = st.byRead ?? {}
     const byWrite = st.byWrite ?? {}
-    const topTools = Object.entries(st.byTool)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([t, n]) => `${prettyTool(t)} ×${n}`)
-      .join(' · ')
+    const toolRows = Object.entries(st.byTool).map(([t, n]) => ({ name: prettyTool(t), n }))
 
     const icon = (k: IconKey, size = 16) =>
       Svg ? <Svg source={svgOf(k)} alt={k} width={size} height={size} /> : <Text>{emojiOf(k)}</Text>
@@ -311,32 +307,55 @@ export const register: Register = on => {
         </Box>
       )
     }
-    /** What a tile counts, one row per file or tool, most first. */
+    /** One row per file or tool, most first, each with a bar scaled to the largest count. */
+    const counts = (id: string, rows: { name: string; n: number; extra?: JSX.Element }[], most = Infinity) => {
+      const sorted = [...rows].sort((a, b) => b.n - a.n).slice(0, most)
+      const max = sorted[0]?.n ?? 1
+      if (!sorted.length) return <Text dimColor>nothing yet</Text>
+      return sorted.map(x => (
+        <Box key={`${id}-${x.name}`} flexDirection="row" justifyContent="space-between" gap={2}>
+          <Text wrap="truncate-start">{x.name}</Text>
+          <Box flexDirection="row" gap={1} flexShrink={0}>
+            {x.extra}
+            <Text color="suggestion">{'▇'.repeat(Math.max(1, Math.round((x.n / max) * 8)))}</Text>
+            <Text bold>×{x.n}</Text>
+          </Box>
+        </Box>
+      ))
+    }
+    /** What a tile counts, opened by its label. */
     const breakdown = (id: string, title: string, rows: { name: string; n: number; extra?: JSX.Element }[]) =>
       pins.includes(id) && (
         <Box key={`${id}-list`} flexDirection="column" marginTop={1}>
           <Text dimColor bold>
             {title}
           </Text>
-          {rows.length === 0 && <Text dimColor>nothing yet</Text>}
-          {[...rows]
-            .sort((a, b) => b.n - a.n)
-            .map(x => (
-              <Box key={`${id}-${x.name}`} flexDirection="row" justifyContent="space-between" gap={2}>
-                <Text wrap="truncate-start">{x.name}</Text>
-                <Box flexDirection="row" gap={1} flexShrink={0}>
-                  {x.extra}
-                  <Text bold>×{x.n}</Text>
-                </Box>
-              </Box>
-            ))}
+          {counts(id, rows)}
         </Box>
       )
+    /** A titled card of the Statistics tab. */
+    const card = (key: string, k: IconKey, title: string, body: (JSX.Element | false)[]) => (
+      <Box key={key} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
+        <Box flexDirection="row" gap={1} alignItems="center" marginBottom={1}>
+          {icon(k, 16)}
+          <Text dimColor bold>
+            {title}
+          </Text>
+        </Box>
+        {body}
+      </Box>
+    )
 
     const row = (label: string, value: string | JSX.Element) => (
       <Box key={`row-${label}`} flexDirection="row" justifyContent="space-between" gap={2}>
         <Text dimColor>{label}</Text>
-        {typeof value === 'string' ? <Text wrap="truncate-start">{value}</Text> : value}
+        {typeof value === 'string' ? (
+          <Text bold wrap="truncate-start">
+            {value}
+          </Text>
+        ) : (
+          value
+        )}
       </Box>
     )
 
@@ -486,22 +505,17 @@ export const register: Register = on => {
       </Box>
     )
 
+    const net = st.adds - st.dels
     const statsView = (
       <Box flexDirection="column" gap={1}>
-        <Box key="stats" flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
-          <Box flexDirection="row" gap={1} alignItems="center">
-            {icon('chart', 18)}
-            <Text dimColor bold>
-              STATISTICS
-            </Text>
-          </Box>
-          <Box flexDirection="row" gap={1}>
+        {card('stats', 'chart', 'OVERVIEW', [
+          <Box key="tiles" flexDirection="row" gap={1}>
             {tile('read', Object.keys(byRead).length, 'files read', 'stats-read')}
             {tile('edit', Object.keys(byWrite).length, 'files written', 'stats-written')}
             {tile('activity', st.calls, 'tool calls', 'stats-tools')}
-          </Box>
-          {breakdown('stats-read', 'FILES READ · times read', Object.entries(byRead).map(([name, n]) => ({ name, n })))}
-          {breakdown(
+          </Box>,
+          breakdown('stats-read', 'FILES READ · times read', Object.entries(byRead).map(([name, n]) => ({ name, n }))),
+          breakdown(
             'stats-written',
             'FILES WRITTEN · edits and writes',
             Object.entries(byWrite).map(([name, v]) => ({
@@ -513,22 +527,39 @@ export const register: Register = on => {
                 </Text>
               ),
             })),
-          )}
-          {breakdown('stats-tools', 'TOOL CALLS · by tool', Object.entries(st.byTool).map(([t, n]) => ({ name: prettyTool(t), n })))}
-          {row(
-            'Lines changed',
-            <Text>
-              <Text color="success">+{st.adds}</Text> <Text color="error">−{st.dels}</Text>
-            </Text>,
-          )}
-          {row('Failed calls', st.failed ? <Text color="error">{st.failed}</Text> : '0')}
-          {row('Tool time', st.calls ? `${fmtDur(st.ms)} · avg ${fmtDur(st.ms / st.calls)}` : '—')}
-          {row('Subagent calls', String(st.subagent))}
-          {row('Top tools', topTools || '—')}
-          {row('Prompts', String(turns))}
-          {row('Tokens', `${fmtNum(st.tokensIn)} in · ${fmtNum(st.tokensOut)} out`)}
-          {row('Session age', st.startedAt ? fmtDur(now - st.startedAt) : '—')}
-        </Box>
+          ),
+          breakdown('stats-tools', 'TOOL CALLS · by tool', toolRows),
+        ])}
+        {card('stats-changes', 'edit', 'CHANGES', [
+          row('Lines added', <Text bold color="success">+{st.adds}</Text>),
+          row('Lines removed', <Text bold color="error">−{st.dels}</Text>),
+          row('Net', <Text bold color={net > 0 ? 'success' : net < 0 ? 'error' : undefined}>{net > 0 ? `+${net}` : net < 0 ? `−${-net}` : '0'}</Text>),
+        ])}
+        {card('stats-calls', 'tool', 'TOOLS', [
+          row(
+            'Failed',
+            st.failed ? (
+              <Text bold color="error">
+                {st.failed} of {st.calls} ({Math.round((st.failed / st.calls) * 100)}%)
+              </Text>
+            ) : (
+              '0'
+            ),
+          ),
+          row('Total time', st.calls ? fmtDur(st.ms) : '—'),
+          row('Average per call', st.calls ? fmtDur(st.ms / st.calls) : '—'),
+          row('Run by subagents', String(st.subagent)),
+          <Box key="most" flexDirection="column" marginTop={1}>
+            <Text dimColor>Most used</Text>
+            {counts('most', toolRows, 3)}
+          </Box>,
+        ])}
+        {card('stats-session', 'terminal', 'SESSION', [
+          row('Prompts', String(turns)),
+          row('Tokens in', fmtNum(st.tokensIn)),
+          row('Tokens out', fmtNum(st.tokensOut)),
+          row('Session age', st.startedAt ? fmtDur(now - st.startedAt) : '—'),
+        ])}
       </Box>
     )
 
