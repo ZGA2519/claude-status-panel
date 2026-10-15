@@ -292,21 +292,6 @@ export const register: Register = on => {
     const icon = (k: IconKey, size = 16) =>
       Svg ? <Svg source={svgOf(k)} alt={k} width={size} height={size} /> : <Text>{emojiOf(k)}</Text>
 
-    // a statistics tile; its label opens the breakdown below the tiles
-    const tile = (k: IconKey, n: number, label: string, id: string) => {
-      const isOpen = pins.includes(id)
-      return (
-        <Box key={`tile-${label}`} flexDirection="column" flexGrow={1} borderStyle="round" borderColor={isOpen ? 'suggestion' : undefined} borderDimColor={!isOpen} paddingX={1}>
-          <Box flexDirection="row" gap={1} alignItems="center">
-            {icon(k, 14)}
-            <Text bold>{n}</Text>
-          </Box>
-          <Button key={id} plain dimColor={!isOpen} onPress={() => toggle(id)}>
-            {`${label} ${isOpen ? '▾' : '▸'}`}
-          </Button>
-        </Box>
-      )
-    }
     /** One row per file or tool, most first, each with a bar scaled to the largest count. */
     const counts = (id: string, rows: { name: string; n: number; extra?: JSX.Element }[], most = Infinity) => {
       const sorted = [...rows].sort((a, b) => b.n - a.n).slice(0, most)
@@ -323,16 +308,28 @@ export const register: Register = on => {
         </Box>
       ))
     }
-    /** What a tile counts, opened by its label. */
-    const breakdown = (id: string, title: string, rows: { name: string; n: number; extra?: JSX.Element }[]) =>
-      pins.includes(id) && (
-        <Box key={`${id}-list`} flexDirection="column" marginTop={1}>
-          <Text dimColor bold>
-            {title}
-          </Text>
-          {counts(id, rows)}
+    /** A card counting files read, files written or tool calls; its title opens the list of each and how often. */
+    const countCard = (id: string, k: IconKey, title: string, n: number, rows: { name: string; n: number; extra?: JSX.Element }[]) => {
+      const isOpen = pins.includes(id)
+      return (
+        <Box key={`${id}-card`} flexDirection="column" borderStyle="round" borderColor={isOpen ? 'suggestion' : undefined} borderDimColor={!isOpen} paddingX={1}>
+          <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap={1}>
+            <Box flexDirection="row" gap={1} alignItems="center">
+              {icon(k, 16)}
+              <Button key={id} plain dimColor={!isOpen} onPress={() => toggle(id)}>
+                {`${title} ${isOpen ? '▾' : '▸'}`}
+              </Button>
+            </Box>
+            <Text bold>{n}</Text>
+          </Box>
+          {isOpen && (
+            <Box flexDirection="column" marginTop={1}>
+              {counts(id, rows)}
+            </Box>
+          )}
         </Box>
       )
+    }
     /** A titled card of the Statistics tab. */
     const card = (key: string, k: IconKey, title: string, body: (JSX.Element | false)[]) => (
       <Box key={key} flexDirection="column" borderStyle="round" borderDimColor paddingX={1}>
@@ -508,29 +505,24 @@ export const register: Register = on => {
     const net = st.adds - st.dels
     const statsView = (
       <Box flexDirection="column" gap={1}>
-        {card('stats', 'chart', 'OVERVIEW', [
-          <Box key="tiles" flexDirection="row" gap={1}>
-            {tile('read', Object.keys(byRead).length, 'files read', 'stats-read')}
-            {tile('edit', Object.keys(byWrite).length, 'files written', 'stats-written')}
-            {tile('activity', st.calls, 'tool calls', 'stats-tools')}
-          </Box>,
-          breakdown('stats-read', 'FILES READ · times read', Object.entries(byRead).map(([name, n]) => ({ name, n }))),
-          breakdown(
-            'stats-written',
-            'FILES WRITTEN · edits and writes',
-            Object.entries(byWrite).map(([name, v]) => ({
-              name,
-              n: v.n,
-              extra: (
-                <Text>
-                  <Text color="success">+{v.adds}</Text> <Text color="error">−{v.dels}</Text>
-                </Text>
-              ),
-            })),
-          ),
-          breakdown('stats-tools', 'TOOL CALLS · by tool', toolRows),
-        ])}
-        {card('stats-changes', 'edit', 'CHANGES', [
+        {countCard('stats-read', 'read', 'FILES READ', Object.keys(byRead).length, Object.entries(byRead).map(([name, n]) => ({ name, n })))}
+        {countCard(
+          'stats-written',
+          'edit',
+          'FILES WRITTEN',
+          Object.keys(byWrite).length,
+          Object.entries(byWrite).map(([name, v]) => ({
+            name,
+            n: v.n,
+            extra: (
+              <Text>
+                <Text color="success">+{v.adds}</Text> <Text color="error">−{v.dels}</Text>
+              </Text>
+            ),
+          })),
+        )}
+        {countCard('stats-tools', 'activity', 'TOOL CALLS', st.calls, toolRows)}
+        {card('stats-changes', 'write', 'CHANGES', [
           row('Lines added', <Text bold color="success">+{st.adds}</Text>),
           row('Lines removed', <Text bold color="error">−{st.dels}</Text>),
           row('Net', <Text bold color={net > 0 ? 'success' : net < 0 ? 'error' : undefined}>{net > 0 ? `+${net}` : net < 0 ? `−${-net}` : '0'}</Text>),

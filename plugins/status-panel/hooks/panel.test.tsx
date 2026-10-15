@@ -213,10 +213,10 @@ test('the pane lists calls newest first with diffs and readable output', async (
     expect(await ui.find({ type: 'Text', text: '+1' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '−1' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /DONE/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'OVERVIEW' })).toBeUndefined() // statistics have their own tab
+    expect(await ui.find({ type: 'Text', text: 'CHANGES' })).toBeUndefined() // statistics have their own tab
     await ui.press({ key: 'tab-stats' })
     expect(await ui.find({ type: 'Button', key: 'stats-written' })).toBeDefined()
-    for (const title of ['OVERVIEW', 'CHANGES', 'TOOLS', 'SESSION']) expect(await ui.find({ type: 'Text', text: title })).toBeDefined()
+    for (const title of ['CHANGES', 'TOOLS', 'SESSION']) expect(await ui.find({ type: 'Text', text: title })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '+1' })).toBeDefined() // lines added
     expect(await ui.find({ type: 'Text', text: 'Most used' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'srv · list' })).toBeDefined() // a most-used tool, one row each
@@ -284,8 +284,7 @@ test('the statistics tiles open what was read, written and called, and how often
     expect(await ui.find({ type: 'Text', text: 'x.ts' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '+2' })).toBeDefined()
     await ui.press({ key: 'stats-tools' })
-    expect(await ui.find({ type: 'Text', text: 'TOOL CALLS · by tool' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Read' })).toBeDefined()
+    expect((await ui.findAll({ type: 'Text', text: 'Read' })).length).toBe(2) // its own list, beside Most used
     for (const k of ['stats-read', 'stats-written', 'stats-tools']) await ui.press({ key: k }) // closed again: shared by surfaces
     expect(await ui.find({ type: 'Text', text: 'src/a.ts' })).toBeUndefined()
     await ui.unmount()
