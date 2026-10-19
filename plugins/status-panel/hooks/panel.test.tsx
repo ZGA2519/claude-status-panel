@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { describe, human, matches, patchToDiff } from './format'
+import { describe, human, matches, mcpRows, patchToDiff } from './format'
 import { DEFAULT_MASCOT, mascot, mascotText } from './mascot'
 import type { MascotAssets } from '../types'
 
@@ -32,6 +32,17 @@ test('the mascot: the GIF while dancing, its still while idle, block art for the
   if (DEFAULT_MASCOT) for (const f of DEFAULT_MASCOT.raster.frames) expect(atob(f).length).toBe(DEFAULT_MASCOT.raster.columns * DEFAULT_MASCOT.raster.rows * 12)
 })
 
+test('mcpRows unwraps every shape a list comes back in', async () => {
+  const rows = [{ scope: 'main', count: 2 }, { scope: 'task-x', count: 1 }]
+  const text = (v: unknown) => ({ type: 'text', text: JSON.stringify(v) })
+  expect(mcpRows({ content: [text({ result: rows })] })).toEqual(rows) // one block holding the wrapper, as Claude Code passes fornix's
+  expect(mcpRows({ content: rows.map(text), structuredContent: { result: rows } })).toEqual(rows) // fornix on the wire
+  expect(mcpRows({ content: rows.map(text) })).toEqual(rows) // a block per row
+  expect(mcpRows({ content: [text(rows)] })).toEqual(rows) // a bare array
+  expect(mcpRows({ content: [], structuredContent: { result: [] } })).toEqual([])
+  expect(mcpRows({ content: [{ text: 'not json' }] })).toEqual([])
+})
+
 test('search matches every word anywhere in a task', async () => {
   const call = { id: '1', tool: 'mcp__srv__list', status: 'done', summary: 'src/app.ts', sections: [{ label: 'output', source: 'rows: 3' }] } as const
   expect(matches({ ...call, sections: [...call.sections] }, 'srv APP')).toBe(true)
@@ -49,7 +60,7 @@ test('the Fornix tab lists each fornix-<repo> server of .mcp.json with its sync 
   on('fs.read', ($, e) =>
     e.path.endsWith('.mcp.json') ? { value: JSON.stringify(mcpJson) } : e.path === '/w/api/.fornix/.sync-on' ? { value: 'readonly\n' } : { deny: 'ENOENT' },
   )
-  const block = (v: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify(v) }], isError: false } })
+  const block = (v: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify({ result: v }) }], isError: false } })
   on('mcp.call', ($, e) =>
     e.server !== 'fornix-api'
       ? { deny: `No MCP server named "${e.server}"` }

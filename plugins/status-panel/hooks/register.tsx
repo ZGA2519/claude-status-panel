@@ -74,6 +74,7 @@ const memoryOf = (r: any): FornixMemory => ({
   tags: Array.isArray(r.tags) ? r.tags.map(String) : [],
   score: typeof r.score === 'number' ? r.score : undefined,
 })
+const memoriesOf = (r: McpToolResult) => mcpRows(r).filter(m => m?.id !== undefined).map(memoryOf)
 
 /** Ask one fornix server for its scopes and newest memories, and read the sync flag in its store folder. */
 async function probe($: EngineInterface, name: string, dir: string | undefined, at: number): Promise<FornixServer> {
@@ -83,8 +84,10 @@ async function probe($: EngineInterface, name: string, dir: string | undefined, 
   try {
     const [sc, sel] = await Promise.all([$.mcp.call(name, 'scopes'), $.mcp.call(name, 'select', { query: '', k: 5 })])
     if (sc.isError || sel.isError) throw failed(sc.isError ? sc : sel)
-    const scopes = mcpRows(sc).map(r => ({ scope: String(r.scope), count: Number(r.count) || 0, tags: r.tags ?? {} }))
-    return { ...base, state: 'ok', scopes, recent: mcpRows(sel).map(memoryOf) }
+    const scopes = mcpRows(sc)
+      .filter(r => typeof r?.scope === 'string')
+      .map(r => ({ scope: r.scope, count: Number(r.count) || 0, tags: r.tags ?? {} }))
+    return { ...base, state: 'ok', scopes, recent: memoriesOf(sel) }
   } catch (err) {
     return { ...base, state: 'down', error: errText(err), scopes: [], recent: [] }
   }
@@ -99,7 +102,7 @@ async function searchFornix($: EngineInterface, name: string, query: string): Pr
   try {
     const r = await $.mcp.call(name, 'select', { query: q, k: 8 })
     if (r.isError) throw failed(r)
-    await put({ query: q, hits: mcpRows(r).map(memoryOf) })
+    await put({ query: q, hits: memoriesOf(r) })
   } catch (err) {
     await put({ query: q, hits: [], error: errText(err) })
   }

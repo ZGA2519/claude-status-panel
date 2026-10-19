@@ -124,14 +124,18 @@ export function describe(tool: string, input: Record<string, unknown>, res: Res 
   }
 }
 
-/** The rows an MCP tool returned: FastMCP's structured `{ result: [...] }`, else each text block parsed as JSON. */
+/** The rows an MCP tool returned. A list comes as `{ result: [...] }` (structured, or as one text block holding it),
+ *  as a bare array, or as one text block per row; each shape is unwrapped to the rows. */
 export function mcpRows(r: { content: { text?: string }[]; structuredContent?: unknown }): any[] {
-  const s = (r.structuredContent as { result?: unknown } | undefined)?.result
-  if (Array.isArray(s)) return s
+  const rows = (v: unknown): any[] => {
+    if (Array.isArray(v)) return v
+    const inner = (v as { result?: unknown } | null)?.result
+    return Array.isArray(inner) ? inner : v === undefined || v === null ? [] : [v]
+  }
+  if (r.structuredContent !== undefined) return rows(r.structuredContent)
   return r.content.flatMap(b => {
     try {
-      const v = JSON.parse(b.text ?? '')
-      return Array.isArray(v) ? v : [v]
+      return rows(JSON.parse(b.text ?? ''))
     } catch {
       return []
     }
