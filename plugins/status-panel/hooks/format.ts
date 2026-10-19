@@ -1,4 +1,4 @@
-import type { AgentRun, Call, Section } from '../types'
+import type { Call, Section } from '../types'
 
 // ponytail: per-section caps keep $.state small; raise if a panel needs more
 const MAX_LINES = 150
@@ -124,23 +124,18 @@ export function describe(tool: string, input: Record<string, unknown>, res: Res 
   }
 }
 
-/** The Agent tool's call as the Agents tab shows it; the result fields arrive once it answers. */
-export function agentRun(input: Record<string, unknown>, res: Res | undefined): AgentRun {
-  const r = (res?.result ?? {}) as Record<string, any> // ponytail: duck-typed per BuiltinToolResults.Agent
-  const text = Array.isArray(r.content) ? r.content.map((b: { text?: string }) => b.text ?? '').join('\n') : res?.deny ?? res?.text
-  return {
-    type: String(input.subagent_type ?? r.agentType ?? 'general-purpose'),
-    prompt: clip(String(input.prompt ?? '')),
-    background: input.run_in_background === true || r.status === 'async_launched' || r.status === 'remote_launched' || undefined,
-    ...(res && {
-      launched: r.status === 'async_launched' || r.status === 'remote_launched' || undefined,
-      result: r.status === 'async_launched' || r.status === 'remote_launched' ? undefined : clip(String(text ?? '').trim()),
-      childId: typeof r.agentId === 'string' ? r.agentId : undefined,
-      toolCount: typeof r.totalToolUseCount === 'number' ? r.totalToolUseCount : undefined,
-      tokens: typeof r.totalTokens === 'number' ? r.totalTokens : undefined,
-      model: typeof r.resolvedModel === 'string' ? r.resolvedModel : undefined,
-    }),
-  }
+/** The rows an MCP tool returned: FastMCP's structured `{ result: [...] }`, else each text block parsed as JSON. */
+export function mcpRows(r: { content: { text?: string }[]; structuredContent?: unknown }): any[] {
+  const s = (r.structuredContent as { result?: unknown } | undefined)?.result
+  if (Array.isArray(s)) return s
+  return r.content.flatMap(b => {
+    try {
+      const v = JSON.parse(b.text ?? '')
+      return Array.isArray(v) ? v : [v]
+    } catch {
+      return []
+    }
+  })
 }
 
 /** Every word of `query` appears somewhere in the call: tool, file/command, stats, status or its bodies. */

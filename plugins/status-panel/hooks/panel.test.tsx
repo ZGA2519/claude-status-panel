@@ -39,57 +39,54 @@ test('search matches every word anywhere in a task', async () => {
   expect(matches({ ...call, sections: [...call.sections] }, 'app missing')).toBe(false)
 })
 
-test('the Agents tab shows each subagent with its type, task, prompt and result', async ($, on) => {
+test('the Fornix tab shows the store, the sync mode and what this session recalled and wrote', async ($, on) => {
   mock.clock(on)
   on('session.cwd', () => ({ value: '/p' }))
   on('session.model', () => ({ value: 'claude-test' }))
   on('session.turns', () => ({ value: 1 }))
-  on('tool.call', () => ({
-    result: { agentId: 'sub-1', agentType: 'Explore', content: [{ type: 'text', text: '## Found it\n- `auth.ts`' }], totalToolUseCount: 2, totalTokens: 1234 },
-    text: 'ok',
-  }))
+  on('fs.read', ($, e) => (e.path.endsWith('.fornix/.sync-on') ? { value: 'readonly\n' } : { value: '' }))
+  const block = (v: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify(v) }], isError: false } })
+  on('mcp.call', ($, e) =>
+    e.tool === 'scopes'
+      ? block([{ scope: 'main', count: 3, tags: { auth: 2, decision: 1 } }])
+      : block([{ id: 'a1', ts: '2026-10-19T07:00:00+00:00', text: 'Session tokens are refreshed by the gateway', tags: ['auth'], source: '' }]),
+  )
+  on('tool.call', ($, e) => ({ result: {}, text: String(e.tool) === 'mcp__fornix__select' ? JSON.stringify([{ id: 'a1' }, { id: 'b2' }]) : '{"id": "c3"}' }))
   const tools = $.tool as unknown as { call: (input: object) => Promise<unknown> }
-  await tools.call({ tool: 'Agent', description: 'Find the auth middleware', prompt: 'Look for auth', subagent_type: 'Explore' })
+  await tools.call({ tool: 'mcp__fornix__select', query: 'auth', k: 6 })
+  await tools.call({ tool: 'mcp__fornix__write', text: 'Use the gateway for refresh' })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'status-panel', surface, ...PANE })
-    expect(await ui.find({ type: 'Text', text: 'SUMMARY' })).toBeDefined() // Summary is the default tab
-    await ui.press({ key: 'tab-agents' })
-    expect(await ui.find({ type: 'Text', text: 'SUMMARY' })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: 'Explore' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'Find the auth middleware' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /2 tool calls · 1.2k tokens/ })).toBeDefined()
-    expect((await ui.findAll({ type: 'Markdown' })).some(m => String(m.props.text).includes('Found it'))).toBe(true) // newest result open
-    const promptButton = (await ui.findAll({ type: 'Button' })).find(b => b.key?.startsWith('agent-prompt-'))
-    await ui.press({ key: promptButton?.key ?? '' })
-    expect((await ui.findAll({ type: 'Markdown' })).some(m => m.props.text === 'Look for auth')).toBe(true)
-    await ui.press({ key: promptButton?.key ?? '' }) // closed again: open/closed is session state shared by surfaces
+    await ui.press({ key: 'tab-fornix' })
+    await ui.press({ key: 'fornix-refresh' })
+    expect(await ui.find({ type: 'Text', text: / CONNECTED / })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'on · read-only' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Session tokens are refreshed by the gateway' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: '#auth' })).toBeDefined()
+    const rowOf = async (label: string) => (await ui.find({ type: 'Box', key: `row-${label}` }))?.text
+    expect(await rowOf('Recalled')).toContain('2')
+    expect(await rowOf('Written')).toContain('1')
+    expect(await rowOf('Memories')).toContain('3')
     await ui.press({ key: 'tab-summary' })
     await ui.unmount()
   }
 })
 
-test('a background agent stays RUNNING after its launch until its own turn completes', async ($, on) => {
+test('the Fornix tab says so when no fornix server answers', async ($, on) => {
   mock.clock(on)
   on('session.cwd', () => ({ value: '/p' }))
   on('session.model', () => ({ value: 'claude-test' }))
   on('session.turns', () => ({ value: 1 }))
-  on('turn.complete', () => ({ text: '' }))
-  on('tool.call', () => ({ result: { status: 'async_launched', agentId: 'sub-9' }, text: 'Async agent launched' }))
-  const tools = $.tool as unknown as { call: (input: object) => Promise<unknown> }
-  await tools.call({ tool: 'Agent', description: 'Audit the repo', prompt: 'Audit it', subagent_type: 'Explore' })
-
+  on('fs.read', () => ({ deny: 'ENOENT: no such file' }))
+  on('mcp.call', () => ({ deny: 'No MCP server named "fornix"' }))
   const ui = await $.ui.mount({ plugin: 'status-panel', surface: 'desktop', ...PANE })
-  await ui.press({ key: 'tab-agents' })
-  expect(await ui.find({ type: 'Text', text: /RUNNING/ })).toBeDefined() // the Agent call answered, the agent did not
-  expect(await ui.find({ type: 'Text', text: /background/ })).toBeDefined()
-  expect((await ui.findAll({ type: 'Markdown' })).some(m => String(m.props.text).includes('launched'))).toBe(false)
-
-  const turn = $.turn as unknown as { complete: (input: object) => Promise<unknown> }
-  await turn.complete({ answer: '# Audit report', durationMs: 4200, isAborted: false, turnId: 't1', agentId: 'sub-9', reason: 'answer' })
-  expect(await ui.find({ type: 'Text', text: /DONE/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /4\.2s/ })).toBeDefined()
-  expect((await ui.findAll({ type: 'Markdown' })).some(m => String(m.props.text).includes('Audit report'))).toBe(true)
+  await ui.press({ key: 'tab-fornix' })
+  await ui.press({ key: 'fornix-refresh' })
+  expect(await ui.find({ type: 'Text', text: / UNREACHABLE / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /No MCP server named/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'off' })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'tab-fornix' })).toBeDefined()
   await ui.unmount()
 })
 

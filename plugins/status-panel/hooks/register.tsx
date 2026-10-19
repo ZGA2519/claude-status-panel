@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { AgentRun, Call, MascotAssets, Prompt, SessionSummary, Stats, Tab } from '../types'
-import { agentRun, clip, describe, fmtDur, fmtNum, matches, prettyTool, rel } from './format'
+import type { Call, FornixStatus, MascotAssets, Prompt, SessionSummary, Stats, Tab } from '../types'
+import { describe, fmtDur, fmtNum, matches, mcpRows, prettyTool, rel } from './format'
 import { emojiOf, iconFor, svgOf } from './icons'
 import type { IconKey } from './icons'
 import { BUILD_MASCOT_PY } from './build-mascot-script'
@@ -26,18 +26,15 @@ const NO_SUMMARY: SessionSummary = { text: '', prompt: 0, updatedAt: 0, isUpdati
 const summary = atom({ plugin: 'status-panel', key: 'summary' } as const, NO_SUMMARY)
 const mascotRev = atom({ plugin: 'status-panel', key: 'mascotRev' } as const, 0) // bumped when the mascot changes
 const beat = atom({ plugin: 'status-panel', key: 'beat' } as const, 0) // the CLI mascot's frame; only the CLI view reads it
+const NO_FORNIX: FornixStatus = { server: 'unknown', sync: 'off', scopes: [], recent: [], checkedAt: 0, recalled: 0, written: 0 }
+const fornix = atom({ plugin: 'status-panel', key: 'fornix' } as const, NO_FORNIX)
 
 const TINT = { running: 'warning', done: 'success', error: 'error' } as const
 const BADGE = { running: '● RUNNING', done: '✓ DONE', error: '✕ FAILED' } as const
-const GLYPH = { running: '●', done: '✓', error: '✕' } as const
-const isAgentTool = (name: string) => name === 'Agent' || name === 'Task'
-
-/** The Agent call answered: merge what it said into what agent.spawn / turn.complete already recorded. */
-function settleAgent(was: AgentRun, now: AgentRun, isError: boolean): AgentRun {
-  const merged = { ...was, ...now, childId: was.childId ?? now.childId }
-  if (now.launched) return { ...merged, state: was.state === 'running' || !was.state ? 'running' : was.state, result: was.result } // runs on in the background
-  return { ...merged, state: was.state === 'done' ? 'done' : isError ? 'error' : 'done', ms: was.ms }
-}
+// fornix's tools: `fornix`, or `fornix-<repo>` in a workspace folder over several repos
+const FORNIX_TOOL = /^mcp__fornix(?:-[\w.-]+)?__(\w+)$/
+// ponytail: the store the tab reads is the plain `fornix` server; pick per repo if a workspace layout needs it
+const FORNIX = 'fornix'
 
 // CLI mascot: the render hook says whether the text mascot is on screen and whether to dance; a timer steps the beat.
 let isTextMascotShown = false
@@ -55,6 +52,26 @@ const SUMMARY_SYSTEM =
   'You keep a brief running summary of a Claude Code session for a side panel. Reply in Markdown: one bold headline line, ' +
   'then 3 to 6 short bullets covering what has been done so far and where things stand now (next step or open question). ' +
   'Under 120 words, plain wording, no preamble, no closing remarks.'
+
+/** Ask the fornix server for its scopes and newest memories, and read the sync flag beside it. One check at a time. */
+let checking: Promise<void> | undefined
+const checkFornix = ($: EngineInterface) => (checking ??= readFornix($).finally(() => (checking = undefined)))
+
+async function readFornix($: EngineInterface): Promise<void> {
+  const flag = await $.fs.read('.fornix/.sync-on').then(String, () => undefined)
+  const sync = flag === undefined ? 'off' : flag.trim() === 'readonly' ? 'readonly' : 'full'
+  const at = await $.clock.now()
+  try {
+    const [sc, sel] = await Promise.all([$.mcp.call(FORNIX, 'scopes'), $.mcp.call(FORNIX, 'select', { query: '', k: 5 })])
+    if (sc.isError || sel.isError) throw new Error((sc.isError ? sc : sel).content.map(b => b.text ?? '').join(' ') || 'the server reported an error')
+    const scopes = mcpRows(sc).map(r => ({ scope: String(r.scope), count: Number(r.count) || 0, tags: r.tags ?? {} }))
+    const recent = mcpRows(sel).map(r => ({ id: String(r.id), ts: String(r.ts ?? ''), text: String(r.text ?? '').slice(0, 400), tags: r.tags ?? [] }))
+    await update($, fornix, (f): FornixStatus => ({ ...f, server: 'ok', error: undefined, sync, scopes, recent, checkedAt: at }))
+  } catch (err) {
+    const error = String(err instanceof Error ? err.message : err).slice(0, 300)
+    await update($, fornix, (f): FornixStatus => ({ ...f, server: 'down', error, sync, checkedAt: at }))
+  }
+}
 
 async function summarize($: EngineInterface): Promise<void> {
   if (isSummarizing) return
@@ -110,6 +127,7 @@ export const register: Register = on => {
       void update($, beat, n => n + 2).catch(() => {})
     })
     void $.ui.open({ id: PANE, title: 'Status' })
+    void checkFornix($)
 
     return next(e)
   })
@@ -152,16 +170,7 @@ export const register: Register = on => {
       await update($, working, () => false)
       lastAnswer = e.answer
       isSummaryDue = true
-    } else {
-      const child = e.agentId
-      const state: AgentRun['state'] = e.reason === 'answer' ? 'done' : 'error'
-      await update($, calls, list =>
-        list.map(c =>
-          c.agent?.childId === child
-            ? { ...c, agent: { ...c.agent, state, ms: e.durationMs, result: e.answer.trim() ? clip(e.answer.trim()) : c.agent.result } }
-            : c,
-        ),
-      )
+      void checkFornix($) // the turn may have flipped the sync flag
     }
     const u = e.usage
     if (u) {
@@ -172,37 +181,24 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('agent.spawn', async ($, e, next) => {
-    const res = await next(e)
-    const childId = res.agentId
-    if (childId) {
-      await update($, calls, list =>
-        list.map(c =>
-          c.id === e.tool_use_id && c.agent ? { ...c, agent: { ...c.agent, childId, state: 'running' as const, type: e.subagentType || c.agent.type } } : c,
-        ),
-      )
-    }
-
-    return res
-  }).catch(($, e, next) => next(e))
-
   on('tool.call', async ($, e, next) => {
     const { tool, tool_use_id: id, agentId, requestMeta: _meta, ...input } = e
     const [cwd, t0, promptId] = await Promise.all([$.session.cwd(), $.clock.now(), read($, currentPrompt)])
     const name = String(tool)
     const call: Call = { id, tool: name, agentId, status: 'running', promptId: promptId || undefined, ...describe(name, input, undefined, cwd) }
-    if (isAgentTool(name)) call.agent = agentRun(input, undefined)
     await update($, calls, list => [call, ...list].slice(0, KEEP))
 
     const res = await next(e)
     const isError = res.deny !== undefined || res.isError === true
     const ms = (await $.clock.now()) - t0
     const done: Call = { ...call, status: isError ? 'error' : 'done', ms, ...describe(name, input, res, cwd) }
-    await update($, calls, list =>
-      list.map(c =>
-        c.id === id ? { ...c, ...done, agent: c.agent && settleAgent(c.agent, agentRun(input, res), isError) } : c,
-      ),
-    )
+    await update($, calls, list => list.map(c => (c.id === id ? { ...c, ...done } : c)))
+    const op = FORNIX_TOOL.exec(name)?.[1]
+    if (op && !isError) {
+      const hits = op === 'select' ? (res.text?.match(/"id"\s*:/g) ?? []).length : 0 // one id per memory returned
+      await update($, fornix, f => ({ ...f, recalled: f.recalled + hits, written: f.written + (op === 'write' ? 1 : 0) }))
+      void checkFornix($)
+    }
     // per file, relative to the working directory: reads, and edits/writes with the lines they changed
     const path = !isError && 'file_path' in input ? rel(String(input.file_path), cwd) : ''
     const isRead = path !== '' && name === 'Read'
@@ -261,9 +257,10 @@ export const register: Register = on => {
       read($, query),
       read($, draft),
     ])
-    const stored = (await read($, tab)) as string // 'status' from before the four tabs means Activity
-    const view: Tab = stored === 'status' ? 'activity' : (stored as Tab)
+    const stored = (await read($, tab)) as string // 'status' from before the four tabs means Activity; the Agents tab is gone
+    const view: Tab = stored === 'status' ? 'activity' : stored === 'agents' ? 'summary' : (stored as Tab)
     const sm = await read($, summary)
+    const fx = await read($, fornix)
     await read($, mascotRev) // redraw when a mascot is uploaded or reset
     const pet = custom ?? DEFAULT_MASCOT // undefined: no mascot until one is picked
     const lim = await read($, limit)
@@ -385,11 +382,6 @@ export const register: Register = on => {
     const emptyNote =
       list.length === 0 ? "Waiting for the agent's first tool call…" : shown.length === 0 ? `No tasks match “${q.trim()}”.` : ''
 
-    const agents = list.filter(c => c.agent)
-    const kidsOf = (childId?: string) => (childId ? list.filter(c => c.agentId === childId) : [])
-    const isLive = (c: Call) =>
-      c.agent?.state ? c.agent.state === 'running' : c.status === 'running' || kidsOf(c.agent?.childId).some(k => k.status === 'running')
-    const running = agents.filter(isLive).length
     const setTab = (t: Tab) => update($, tab, () => t)
     const tabButton = (t: Tab, label: string) => (
       <Button key={`tab-${t}`} label={label} variant={view === t ? 'primary' : 'secondary'} onPress={() => setTab(t)} />
@@ -400,12 +392,7 @@ export const register: Register = on => {
         {tabButton('summary', 'Summary')}
         {tabButton('stats', 'Statistics')}
         {tabButton('activity', 'Activity')}
-        <Button
-          key="tab-agents"
-          label={running ? `Agents · ${running} running` : `Agents (${agents.length})`}
-          variant={view === 'agents' ? 'primary' : 'secondary'}
-          onPress={() => setTab('agents')}
-        />
+        {tabButton('fornix', fx.server === 'down' ? 'Fornix ✕' : 'Fornix')}
       </Box>
     )
 
@@ -646,100 +633,84 @@ export const register: Register = on => {
       </Box>
     )
 
-    const agentsView = (
+    const FX = {
+      unknown: { tint: 'warning', badge: '… CHECKING' },
+      ok: { tint: 'success', badge: '● CONNECTED' },
+      down: { tint: 'error', badge: '✕ UNREACHABLE' },
+    } as const
+    const memories = fx.scopes.reduce((n, sc) => n + sc.count, 0)
+    const tagRows = Object.entries(
+      fx.scopes.reduce<Record<string, number>>((all, sc) => {
+        for (const [t, n] of Object.entries(sc.tags)) all[t] = (all[t] ?? 0) + n
+        return all
+      }, {}),
+    ).map(([name, n]) => ({ name: `#${name}`, n }))
+    const fornixView = (
       <Box flexDirection="column" gap={1}>
         <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
-          {icon('agent')}
-          <Text bold>AGENTS</Text>
-          <Text dimColor>{agents.length} launched ·</Text>
-          {running ? <Text color="warning">● {running} running</Text> : <Text dimColor>none running</Text>}
-        </Box>
-        {agents.length === 0 && (
-          <Box borderStyle="round" borderDimColor paddingX={1}>
-            <Text dimColor italic>
-              No subagents yet. When Claude hands work to an agent, it shows up here with its prompt, live tool calls and result.
+          {icon('plug')}
+          <Text bold>FORNIX</Text>
+          <Text backgroundColor={FX[fx.server].tint} color="inverseText" bold>
+            {` ${FX[fx.server].badge} `}
+          </Text>
+          <Box flexGrow={1}>
+            <Text dimColor wrap="truncate-end">
+              {fx.checkedAt ? `checked ${fmtDur(Math.max(0, now - fx.checkedAt))} ago` : ''}
             </Text>
           </Box>
+          <Button key="fornix-refresh" plain onPress={() => checkFornix($)}>
+            <Text color="suggestion">↻ Refresh</Text>
+          </Button>
+        </Box>
+        {fx.server === 'down' && (
+          <Box borderStyle="round" borderColor="error" paddingX={1} flexDirection="column">
+            <Text>
+              The <Text bold>fornix</Text> MCP server did not answer. In a repo: <Text bold>uvx fornix setup -y</Text>, restart, approve{' '}
+              <Text bold>fornix</Text>; or reconnect it in /mcp.
+            </Text>
+            {fx.error && <Text dimColor>{fx.error}</Text>}
+          </Box>
         )}
-        {agents.map((c, i) => {
-          const a = c.agent!
-          const kids = kidsOf(a.childId)
-          const status = isLive(c) ? 'running' : (a.state ?? c.status)
-          const took = a.ms ?? (a.launched ? undefined : c.ms)
-          const showPrompt = pins.includes(`${c.id}:prompt`) // closed unless toggled
-          const showResult = (i === 0) !== pins.includes(`${c.id}:result`) // the newest opens by itself
-          const facts = [a.model, `${a.toolCount ?? kids.length} tool calls`, a.tokens ? `${fmtNum(a.tokens)} tokens` : ''].filter(Boolean)
-          return (
-            <Box
-              key={`agent-${c.id}`}
-              flexDirection="column"
-              borderStyle="round"
-              borderColor={status === 'done' ? undefined : TINT[status]}
-              borderDimColor={status === 'done'}
-              hover={{ borderColor: 'suggestion' }}
-              paddingX={1}
-            >
-              <Box flexDirection="row" gap={1} alignItems="center" flexWrap="wrap">
-                {icon('agent')}
-                <Text bold color="claude">
-                  {a.type}
-                </Text>
-                <Text backgroundColor={TINT[status]} color="inverseText" bold>
-                  {` ${BADGE[status]} `}
-                </Text>
-                {a.background && <Text dimColor>⧗ background</Text>}
-                {status !== 'running' && took !== undefined && <Text dimColor>⏱ {fmtDur(took)}</Text>}
-              </Box>
-              <Text bold>{c.summary || 'Untitled task'}</Text>
-              <Text dimColor wrap="truncate-end">
-                {facts.join(' · ')}
+        {card('fornix-status', 'plug', 'STATUS', [
+          row(
+            'Sync',
+            <Text bold color={fx.sync === 'off' ? undefined : 'success'}>
+              {fx.sync === 'full' ? 'on · recall + capture' : fx.sync === 'readonly' ? 'on · read-only' : 'off'}
+            </Text>,
+          ),
+          row('Memories', fx.server === 'ok' ? String(memories) : '—'),
+          row('Scopes', fx.server === 'ok' ? String(fx.scopes.length) : '—'),
+        ])}
+        {card('fornix-session', 'terminal', 'THIS SESSION', [row('Recalled', String(fx.recalled)), row('Written', String(fx.written))])}
+        {fx.server === 'ok' && card('fornix-scopes', 'chart', 'SCOPES', [
+            <Box key="list" flexDirection="column">
+              {counts('fornix-scopes', fx.scopes.map(sc => ({ name: sc.scope, n: sc.count })))}
+            </Box>,
+          ])}
+        {fx.server === 'ok' && tagRows.length > 0 && card('fornix-tags', 'search', 'TOP TAGS', [
+            <Box key="list" flexDirection="column">
+              {counts('fornix-tags', tagRows, 8)}
+            </Box>,
+          ])}
+        {fx.server === 'ok' &&
+          card('fornix-recent', 'summary', 'NEWEST MEMORIES', [
+            fx.recent.length === 0 ? (
+              <Text key="none" dimColor italic>
+                The store is empty.
               </Text>
-
-              {kids.length > 0 && (
-                <Box flexDirection="column" marginTop={1}>
-                  <Text dimColor bold>
-                    LATEST STEPS
-                  </Text>
-                  {kids.slice(0, 5).map(k => (
-                    <Text wrap="truncate-end">
-                      <Text color={TINT[k.status]}>{GLYPH[k.status]}</Text> <Text bold>{prettyTool(k.tool)}</Text>{' '}
-                      <Text dimColor>
-                        {k.summary}
-                        {k.ms !== undefined ? ` · ${fmtDur(k.ms)}` : ''}
-                      </Text>
+            ) : (
+              <Box key="list" flexDirection="column" gap={1}>
+                {fx.recent.map(m => (
+                  <Box key={`mem-${m.id}`} flexDirection="column">
+                    <Text>{m.text}</Text>
+                    <Text dimColor wrap="truncate-end">
+                      {[m.ts.slice(0, 10), ...m.tags.map(t => `#${t}`)].join(' ')}
                     </Text>
-                  ))}
-                  {kids.length > 5 && <Text dimColor>… {kids.length - 5} earlier steps</Text>}
-                </Box>
-              )}
-
-              <Box flexDirection="row" gap={2} marginTop={1}>
-                <Button key={`agent-prompt-${c.id}`} plain onPress={() => toggle(`${c.id}:prompt`)}>
-                  <Text color="suggestion">{showPrompt ? '▾' : '▸'} Prompt</Text>
-                </Button>
-                <Button key={`agent-result-${c.id}`} plain onPress={() => toggle(`${c.id}:result`)}>
-                  <Text color="suggestion">{showResult ? '▾' : '▸'} Result</Text>
-                </Button>
+                  </Box>
+                ))}
               </Box>
-              {showPrompt && (
-                <Box flexDirection="column" paddingLeft={2} marginTop={1}>
-                  <Markdown text={a.prompt || '_(empty prompt)_'} />
-                </Box>
-              )}
-              {showResult && (
-                <Box flexDirection="column" paddingLeft={2} marginTop={1}>
-                  {a.result ? (
-                    <Markdown text={a.result} />
-                  ) : (
-                    <Text dimColor italic>
-                      {status === 'running' ? 'Still working…' : 'No result text.'}
-                    </Text>
-                  )}
-                </Box>
-              )}
-            </Box>
-          )
-        })}
+            ),
+          ])}
       </Box>
     )
 
@@ -807,7 +778,7 @@ export const register: Register = on => {
 
         {tabBar}
 
-        {view === 'agents' ? agentsView : view === 'stats' ? statsView : view === 'activity' ? activityView : summaryView}
+        {view === 'fornix' ? fornixView : view === 'stats' ? statsView : view === 'activity' ? activityView : summaryView}
       </Box>
     )
   })

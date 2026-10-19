@@ -10,25 +10,6 @@ export type Section = {
   startLine?: number
 }
 
-/** What an Agent (subagent) call carries for the Agents tab. */
-export type AgentRun = {
-  type: string
-  prompt: string
-  /** The subagent's own id, from agent.spawn: its tool calls carry it as `agentId`. */
-  childId?: string
-  background?: boolean
-  /** The subagent's own life, apart from the Agent call (a background launch answers at once). */
-  state?: 'running' | 'done' | 'error'
-  /** How long the subagent ran, from its turn.complete. */
-  ms?: number
-  /** The Agent call answered only "launched"; the result comes with the subagent's turn.complete. */
-  launched?: boolean
-  result?: string
-  toolCount?: number
-  tokens?: number
-  model?: string
-}
-
 /** A mascot made by scripts/build-mascot.py --json from a GIF the person uploaded. */
 export type MascotAssets = {
   gif: string
@@ -60,7 +41,6 @@ export type Call = {
   adds?: number
   dels?: number
   ms?: number
-  agent?: AgentRun
   /** The prompt this task ran under (absent: before the panel saw a prompt). */
   promptId?: string
   sections: Section[]
@@ -84,7 +64,25 @@ export type Stats = {
   byWrite?: Record<string, { n: number; adds: number; dels: number }>
 }
 
-export type Tab = 'summary' | 'stats' | 'activity' | 'agents'
+/** One memory as fornix's `select` returns it. */
+export type FornixMemory = { id: string; ts: string; text: string; tags: string[] }
+
+/** The Fornix tab: the fornix MCP server's store as last read, and what this session recalled and wrote. */
+export type FornixStatus = {
+  /** 'ok': the server answered; 'down': the call failed (not configured, not approved or not running). */
+  server: 'unknown' | 'ok' | 'down'
+  error?: string
+  /** `.fornix/.sync-on` in the working directory: absent off, "readonly" recall only, anything else full. */
+  sync: 'off' | 'full' | 'readonly'
+  scopes: { scope: string; count: number; tags: Record<string, number> }[]
+  recent: FornixMemory[]
+  checkedAt: number
+  /** This session: memories `select` returned, and `write` calls. */
+  recalled: number
+  written: number
+}
+
+export type Tab = 'summary' | 'stats' | 'activity' | 'fornix'
 
 declare module 'claude-code' {
   interface PluginState {
@@ -102,6 +100,7 @@ declare module 'claude-code' {
       currentPrompt: string
       mascotRev: number
       stats: Stats
+      fornix: FornixStatus
     }
   }
 }
