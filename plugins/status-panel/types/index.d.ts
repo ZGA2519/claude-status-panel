@@ -67,17 +67,20 @@ export type Stats = {
 /** One memory as fornix's `select` returns it. */
 export type FornixMemory = { id: string; ts: string; text: string; tags: string[] }
 
-/** The Fornix tab: the fornix MCP server's store as last read, and what this session recalled and wrote. */
-export type FornixStatus = {
-  /** 'ok': the server answered; 'down': the call failed (not configured, not approved or not running). */
-  server: 'unknown' | 'ok' | 'down'
+/** One fornix MCP server: `fornix` for a repo of its own, `fornix-<repo>` per repo in a folder over several. */
+export type FornixServer = {
+  name: string
+  /** Its store folder (`--directory` in .mcp.json), the `.sync-on` flag inside; absent when only its tool calls named it. */
+  dir?: string
+  /** 'ok': it answered; 'down': the call failed (not connected, not approved or not running). */
+  state: 'unknown' | 'ok' | 'down'
   error?: string
-  /** `.fornix/.sync-on` in the working directory: absent off, "readonly" recall only, anything else full. */
-  sync: 'off' | 'full' | 'readonly'
+  /** The `.sync-on` flag: absent off, "readonly" recall only, anything else full; unknown without `dir`. */
+  sync?: 'off' | 'full' | 'readonly'
   scopes: { scope: string; count: number; tags: Record<string, number> }[]
   recent: FornixMemory[]
   checkedAt: number
-  /** This session: memories `select` returned, and `write` calls. */
+  /** This session: memories its `select` returned, and its `write` calls. */
   recalled: number
   written: number
 }
@@ -100,7 +103,7 @@ declare module 'claude-code' {
       currentPrompt: string
       mascotRev: number
       stats: Stats
-      fornix: FornixStatus
+      fornixServers: FornixServer[]
     }
   }
 }

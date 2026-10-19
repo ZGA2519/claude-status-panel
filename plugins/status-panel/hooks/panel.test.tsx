@@ -39,53 +39,65 @@ test('search matches every word anywhere in a task', async () => {
   expect(matches({ ...call, sections: [...call.sections] }, 'app missing')).toBe(false)
 })
 
-test('the Fornix tab shows the store, the sync mode and what this session recalled and wrote', async ($, on) => {
+test('the Fornix tab lists each fornix-<repo> server of .mcp.json with its sync flag, store and session counts', async ($, on) => {
   mock.clock(on)
-  on('session.cwd', () => ({ value: '/p' }))
+  on('session.cwd', () => ({ value: '/w' }))
   on('session.model', () => ({ value: 'claude-test' }))
   on('session.turns', () => ({ value: 1 }))
-  on('fs.read', ($, e) => (e.path.endsWith('.fornix/.sync-on') ? { value: 'readonly\n' } : { value: '' }))
+  const server = (dir: string) => ({ command: 'uv', args: ['run', '--directory', dir, 'python', '-m', 'context_store.server', 'mcp'] })
+  const mcpJson = { mcpServers: { 'fornix-api': server('/w/api/.fornix'), 'fornix-web': server('/w/web/.fornix'), other: { command: 'x' } } }
+  on('fs.read', ($, e) =>
+    e.path.endsWith('.mcp.json') ? { value: JSON.stringify(mcpJson) } : e.path === '/w/api/.fornix/.sync-on' ? { value: 'readonly\n' } : { deny: 'ENOENT' },
+  )
   const block = (v: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify(v) }], isError: false } })
   on('mcp.call', ($, e) =>
-    e.tool === 'scopes'
-      ? block([{ scope: 'main', count: 3, tags: { auth: 2, decision: 1 } }])
-      : block([{ id: 'a1', ts: '2026-10-19T07:00:00+00:00', text: 'Session tokens are refreshed by the gateway', tags: ['auth'], source: '' }]),
+    e.server !== 'fornix-api'
+      ? { deny: `No MCP server named "${e.server}"` }
+      : e.tool === 'scopes'
+        ? block([{ scope: 'main', count: 3, tags: { auth: 2, decision: 1 } }])
+        : block([{ id: 'a1', ts: '2026-10-19T07:00:00+00:00', text: 'Session tokens are refreshed by the gateway', tags: ['auth'], source: '' }]),
   )
-  on('tool.call', ($, e) => ({ result: {}, text: String(e.tool) === 'mcp__fornix__select' ? JSON.stringify([{ id: 'a1' }, { id: 'b2' }]) : '{"id": "c3"}' }))
+  on('tool.call', ($, e) => ({ result: {}, text: String(e.tool).endsWith('__select') ? JSON.stringify([{ id: 'a1' }, { id: 'b2' }]) : '{"id": "c3"}' }))
   const tools = $.tool as unknown as { call: (input: object) => Promise<unknown> }
-  await tools.call({ tool: 'mcp__fornix__select', query: 'auth', k: 6 })
-  await tools.call({ tool: 'mcp__fornix__write', text: 'Use the gateway for refresh' })
+  await tools.call({ tool: 'mcp__fornix-api__select', query: 'auth', k: 6 })
+  await tools.call({ tool: 'mcp__fornix-api__write', text: 'Use the gateway for refresh' })
 
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'status-panel', surface, ...PANE })
     await ui.press({ key: 'tab-fornix' })
     await ui.press({ key: 'fornix-refresh' })
-    expect(await ui.find({ type: 'Text', text: / CONNECTED / })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'on · read-only' })).toBeDefined()
+    const card = async (name: string) => (await ui.find({ type: 'Box', key: `fornix-${name}-card` }))?.text ?? ''
+    expect(await card('fornix-api')).toMatch(/fornix-api.* CONNECTED .*on · read-only.*3 in 1 scope.*2 recalled · 1 written/)
+    expect(await card('fornix-web')).toMatch(/fornix-web.* UNREACHABLE .*off.*0 recalled · 0 written.*No MCP server named "fornix-web"/)
+    expect(await ui.find({ type: 'Button', key: 'fornix-other' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: 'Session tokens are refreshed by the gateway' })).toBeUndefined() // two servers: closed
+    await ui.press({ key: 'fornix-fornix-api' })
     expect(await ui.find({ type: 'Text', text: 'Session tokens are refreshed by the gateway' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '#auth' })).toBeDefined()
-    const rowOf = async (label: string) => (await ui.find({ type: 'Box', key: `row-${label}` }))?.text
-    expect(await rowOf('Recalled')).toContain('2')
-    expect(await rowOf('Written')).toContain('1')
-    expect(await rowOf('Memories')).toContain('3')
+    await ui.press({ key: 'fornix-fornix-api' }) // closed again: open/closed is session state shared by surfaces
     await ui.press({ key: 'tab-summary' })
     await ui.unmount()
   }
 })
 
-test('the Fornix tab says so when no fornix server answers', async ($, on) => {
+test('the Fornix tab says when no fornix server is set up, and lists one once its tools are called', async ($, on) => {
   mock.clock(on)
   on('session.cwd', () => ({ value: '/p' }))
   on('session.model', () => ({ value: 'claude-test' }))
   on('session.turns', () => ({ value: 1 }))
   on('fs.read', () => ({ deny: 'ENOENT: no such file' }))
-  on('mcp.call', () => ({ deny: 'No MCP server named "fornix"' }))
+  on('mcp.call', ($, e) => ({ deny: `No MCP server named "${e.server}"` }))
+  on('tool.call', () => ({ result: {}, text: '[]' }))
   const ui = await $.ui.mount({ plugin: 'status-panel', surface: 'desktop', ...PANE })
   await ui.press({ key: 'tab-fornix' })
   await ui.press({ key: 'fornix-refresh' })
-  expect(await ui.find({ type: 'Text', text: / UNREACHABLE / })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /No MCP server named/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: 'off' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /No fornix server in this folder/ })).toBeDefined()
+
+  const tools = $.tool as unknown as { call: (input: object) => Promise<unknown> }
+  await tools.call({ tool: 'mcp__fornix-pmo__select', query: '' })
+  await ui.press({ key: 'fornix-refresh' })
+  expect(await ui.find({ type: 'Text', text: /No fornix server in this folder/ })).toBeUndefined()
+  expect((await ui.find({ type: 'Box', key: 'fornix-fornix-pmo-card' }))?.text).toMatch(/fornix-pmo.* UNREACHABLE /)
   expect(await ui.find({ type: 'Button', key: 'tab-fornix' })).toBeDefined()
   await ui.unmount()
 })

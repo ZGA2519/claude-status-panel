@@ -15,7 +15,7 @@ A side panel for [Claude Code](https://claude.com/claude-code) that shows what t
   - **Summary** – a short running summary of the session, rewritten after each prompt (↻ Refresh to redo it now).
   - **Statistics** – files read and written, tool calls (click a tile to list each file or tool and how many times), lines added/removed, failures, tool time, top tools, prompts, tokens, session age.
   - **Activity** – every tool call grouped by prompt (newest first): file reads with line numbers, edits as coloured diffs, command and tool output pretty-printed. Search box, **Load more** for earlier prompts, and each prompt heading scrolls the chat back to where it was sent.
-  - **Fornix** – status of the [fornix](https://github.com/ZGA2519/fornix) project-memory MCP server in the working directory: connected or not, sync mode (`.fornix/.sync-on`), memory count per scope, top tags, the newest memories, and how many memories this session recalled and wrote (↻ Refresh to re-read).
+  - **Fornix** – one card per [fornix](https://github.com/ZGA2519/fornix) project-memory MCP server in the working directory's `.mcp.json` (`fornix`, or `fornix-<repo>` per repo in a folder over several), plus any whose tools the session calls: connected or not, sync mode (`.fornix/.sync-on`), memories per scope, top tags, the newest memories, and how many memories this session recalled and wrote (↻ Refresh to re-read).
 
 ## Install
 
