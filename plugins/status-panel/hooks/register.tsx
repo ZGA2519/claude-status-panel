@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, McpToolResult, Register } from 'claude-code'
 
-import type { Call, FornixServer, MascotAssets, Prompt, SessionSummary, Stats, Tab } from '../types'
+import type { Call, FornixMemory, FornixSearch, FornixServer, MascotAssets, Prompt, SessionSummary, Stats, Tab } from '../types'
 import { describe, fmtDur, fmtNum, matches, mcpRows, prettyTool, rel } from './format'
 import { emojiOf, iconFor, svgOf } from './icons'
 import type { IconKey } from './icons'
@@ -27,6 +27,7 @@ const summary = atom({ plugin: 'status-panel', key: 'summary' } as const, NO_SUM
 const mascotRev = atom({ plugin: 'status-panel', key: 'mascotRev' } as const, 0) // bumped when the mascot changes
 const beat = atom({ plugin: 'status-panel', key: 'beat' } as const, 0) // the CLI mascot's frame; only the CLI view reads it
 const fornix = atom({ plugin: 'status-panel', key: 'fornixServers' } as const, [])
+const fornixSearch = atom({ plugin: 'status-panel', key: 'fornixSearch' } as const, {})
 
 const TINT = { running: 'warning', done: 'success', error: 'error' } as const
 const BADGE = { running: '● RUNNING', done: '✓ DONE', error: '✕ FAILED' } as const
@@ -64,6 +65,16 @@ async function fornixConfigured($: EngineInterface): Promise<{ name: string; dir
     })
 }
 
+const errText = (err: unknown) => String(err instanceof Error ? err.message : err).slice(0, 300)
+const failed = (r: McpToolResult) => new Error(r.content.map(b => b.text ?? '').join(' ') || 'the server reported an error')
+const memoryOf = (r: any): FornixMemory => ({
+  id: String(r.id),
+  ts: String(r.ts ?? ''),
+  text: String(r.text ?? '').slice(0, 400),
+  tags: Array.isArray(r.tags) ? r.tags.map(String) : [],
+  score: typeof r.score === 'number' ? r.score : undefined,
+})
+
 /** Ask one fornix server for its scopes and newest memories, and read the sync flag in its store folder. */
 async function probe($: EngineInterface, name: string, dir: string | undefined, at: number): Promise<FornixServer> {
   const sync: FornixServer['sync'] =
@@ -71,13 +82,51 @@ async function probe($: EngineInterface, name: string, dir: string | undefined, 
   const base = { name, dir, sync, checkedAt: at, recalled: 0, written: 0 }
   try {
     const [sc, sel] = await Promise.all([$.mcp.call(name, 'scopes'), $.mcp.call(name, 'select', { query: '', k: 5 })])
-    if (sc.isError || sel.isError) throw new Error((sc.isError ? sc : sel).content.map(b => b.text ?? '').join(' ') || 'the server reported an error')
+    if (sc.isError || sel.isError) throw failed(sc.isError ? sc : sel)
     const scopes = mcpRows(sc).map(r => ({ scope: String(r.scope), count: Number(r.count) || 0, tags: r.tags ?? {} }))
-    const recent = mcpRows(sel).map(r => ({ id: String(r.id), ts: String(r.ts ?? ''), text: String(r.text ?? '').slice(0, 400), tags: r.tags ?? [] }))
-    return { ...base, state: 'ok', scopes, recent }
+    return { ...base, state: 'ok', scopes, recent: mcpRows(sel).map(memoryOf) }
   } catch (err) {
-    return { ...base, state: 'down', error: String(err instanceof Error ? err.message : err).slice(0, 300), scopes: [], recent: [] }
+    return { ...base, state: 'down', error: errText(err), scopes: [], recent: [] }
   }
+}
+
+/** Search one server's memories; an empty query clears the search and its card shows the newest again. */
+async function searchFornix($: EngineInterface, name: string, query: string): Promise<void> {
+  const q = query.trim()
+  const put = (found: FornixSearch | undefined) =>
+    update($, fornixSearch, ({ [name]: _, ...rest }): Record<string, FornixSearch> => (found ? { ...rest, [name]: found } : rest))
+  if (!q) return void (await put(undefined))
+  try {
+    const r = await $.mcp.call(name, 'select', { query: q, k: 8 })
+    if (r.isError) throw failed(r)
+    await put({ query: q, hits: mcpRows(r).map(memoryOf) })
+  } catch (err) {
+    await put({ query: q, hits: [], error: errText(err) })
+  }
+}
+
+/** Flip a server's sync: the `.sync-on` flag fornix's prompt hook reads, written or removed in its store folder. */
+async function setSync($: EngineInterface, sv: FornixServer, mode: 'off' | 'readonly' | 'full'): Promise<void> {
+  if (sv.dir === undefined) return
+  const flag = `${sv.dir.startsWith('/') ? sv.dir : `${await $.session.cwd()}/${sv.dir}`}/.sync-on`
+  try {
+    if (mode !== 'off') await $.fs.write(flag, `${mode}\n`)
+    else {
+      // ponytail: $.fs has no delete; rm -f is the flag's whole removal
+      const r = await $.process.run(['rm', '-f', flag])
+      if (r.exitCode !== 0) throw new Error(r.stderr.trim() || `rm exited ${r.exitCode}`)
+    }
+  } catch (err) {
+    return void $.ui.toast(`Could not change sync for ${sv.name}: ${errText(err)}`)
+  }
+  await update($, fornix, list => list.map(s => (s.name === sv.name ? { ...s, sync: mode } : s)))
+  void $.ui.toast(
+    mode !== 'off'
+      ? `${sv.name}: sync ${mode === 'full' ? 'on' : 'on, read-only'} from the next prompt`
+      : sv.sync === 'full'
+        ? `${sv.name}: sync off. Nothing was flushed: /context-stop-sync stores what is left first`
+        : `${sv.name}: sync off`,
+  )
 }
 
 /** Re-read every fornix server: the configured ones and any whose tools were called. One check at a time. */
@@ -253,9 +302,13 @@ export const register: Register = on => {
 
   // the search box (search-box.tsx) posts { type: 'search', text } or { type: 'clear' }
   on('ui.message', { requestId: PANE }, async ($, e) => {
-    const data = (e.data ?? {}) as { type?: string; text?: unknown }
+    const data = (e.data ?? {}) as { type?: string; text?: unknown; channel?: unknown }
     const text = data.type === 'search' && typeof data.text === 'string' ? data.text : ''
-    if (data.type === 'search' || data.type === 'clear') {
+    const isSearch = data.type === 'search' || data.type === 'clear'
+    // a server card's search box names its server; only ever a fornix one is asked
+    if (typeof data.channel === 'string') {
+      if (isSearch && FORNIX_NAME.test(data.channel)) await searchFornix($, data.channel, text)
+    } else if (isSearch) {
       await update($, draft, () => text)
       await update($, query, () => text)
       await update($, limit, () => 1)
@@ -288,6 +341,7 @@ export const register: Register = on => {
     const view: Tab = stored === 'status' ? 'activity' : stored === 'agents' ? 'summary' : (stored as Tab)
     const sm = await read($, summary)
     const servers = await read($, fornix)
+    const found = await read($, fornixSearch)
     await read($, mascotRev) // redraw when a mascot is uploaded or reset
     const pet = custom ?? DEFAULT_MASCOT // undefined: no mascot until one is picked
     const lim = await read($, limit)
@@ -665,11 +719,26 @@ export const register: Register = on => {
       ok: { tint: 'success', badge: '● CONNECTED' },
       down: { tint: 'error', badge: '✕ UNREACHABLE' },
     } as const
-    const SYNC = { full: 'on · recall + capture', readonly: 'on · read-only', off: 'off' } as const
+    const SYNC = { off: 'Off', readonly: 'Read-only', full: 'Full' } as const
     const checkedAt = Math.max(0, ...servers.map(sv => sv.checkedAt))
     const serverCard = (sv: FornixServer) => {
       const id = `fornix-${sv.name}`
       const isOpen = (servers.length === 1) !== pins.includes(id) // a lone server opens by itself; a click flips any
+      const search = found[sv.name]
+      const memory = (m: FornixMemory) => (
+        <Box key={`${id}-mem-${m.id}`} flexDirection="column">
+          <Text>{m.text}</Text>
+          <Text dimColor wrap="truncate-end">
+            {[m.ts.slice(0, 10), m.score === undefined ? '' : `score ${m.score.toFixed(2)}`, ...m.tags.map(t => `#${t}`)].filter(Boolean).join(' ')}
+          </Text>
+        </Box>
+      )
+      const placeholder = `Search ${sv.name} memories…`
+      const searchField = Client ? (
+        <Client key={`${id}-search`} module="./search-box.tsx" props={{ value: search?.query ?? '', placeholder, isTerminal: isCli, channel: sv.name }} width="100%" />
+      ) : (
+        Input && <Input key={`${id}-search`} placeholder={placeholder} value={search?.query ?? ''} onSubmit={v => searchFornix($, sv.name, v)} />
+      )
       const tagRows = Object.entries(
         sv.scopes.reduce<Record<string, number>>((all, sc) => {
           for (const [t, n] of Object.entries(sc.tags)) all[t] = (all[t] ?? 0) + n
@@ -688,7 +757,16 @@ export const register: Register = on => {
               {` ${FX[sv.state].badge} `}
             </Text>
           </Box>
-          {sv.sync && row('Sync', <Text bold color={sv.sync === 'off' ? undefined : 'success'}>{SYNC[sv.sync]}</Text>)}
+          {sv.sync && (
+            <Box key={`${id}-sync`} flexDirection="row" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
+              <Text dimColor>Sync</Text>
+              <Box flexDirection="row" gap={1}>
+                {(['off', 'readonly', 'full'] as const).map(m => (
+                  <Button key={`${id}-sync-${m}`} label={SYNC[m]} variant={sv.sync === m ? 'primary' : 'secondary'} onPress={() => setSync($, sv, m)} />
+                ))}
+              </Box>
+            </Box>
+          )}
           {row('Memories', sv.state === 'ok' ? `${sv.scopes.reduce((n, sc) => n + sc.count, 0)} in ${sv.scopes.length} scope${sv.scopes.length === 1 ? '' : 's'}` : '—')}
           {row('This session', `${sv.recalled} recalled · ${sv.written} written`)}
           {sv.state === 'down' && <Text dimColor>{sv.error ? `${sv.error} · ` : ''}reconnect it in /mcp</Text>}
@@ -705,16 +783,19 @@ export const register: Register = on => {
                 </Box>
               )}
               <Box flexDirection="column" gap={1}>
-                <Text dimColor bold>NEWEST MEMORIES</Text>
-                {sv.recent.length === 0 && <Text dimColor italic>The store is empty.</Text>}
-                {sv.recent.map(m => (
-                  <Box key={`${id}-mem-${m.id}`} flexDirection="column">
-                    <Text>{m.text}</Text>
-                    <Text dimColor wrap="truncate-end">
-                      {[m.ts.slice(0, 10), ...m.tags.map(t => `#${t}`)].join(' ')}
-                    </Text>
-                  </Box>
-                ))}
+                {searchField}
+                {search ? (
+                  <Text dimColor bold>
+                    MATCHES FOR “{search.query}” · {search.hits.length}
+                  </Text>
+                ) : (
+                  <Text dimColor bold>NEWEST MEMORIES</Text>
+                )}
+                {search?.error && <Text color="error">Could not search: {search.error}</Text>}
+                {(search ? search.hits : sv.recent).length === 0 && !search?.error && (
+                  <Text dimColor italic>{search ? 'Nothing stored matches that.' : 'The store is empty.'}</Text>
+                )}
+                {(search ? search.hits : sv.recent).map(memory)}
               </Box>
             </Box>
           )}

@@ -65,7 +65,10 @@ export type Stats = {
 }
 
 /** One memory as fornix's `select` returns it. */
-export type FornixMemory = { id: string; ts: string; text: string; tags: string[] }
+export type FornixMemory = { id: string; ts: string; text: string; tags: string[]; score?: number }
+
+/** A memory search typed into a server's card: what `select(query)` returned. */
+export type FornixSearch = { query: string; hits: FornixMemory[]; error?: string }
 
 /** One fornix MCP server: `fornix` for a repo of its own, `fornix-<repo>` per repo in a folder over several. */
 export type FornixServer = {
@@ -104,6 +107,7 @@ declare module 'claude-code' {
       mascotRev: number
       stats: Stats
       fornixServers: FornixServer[]
+      fornixSearch: Record<string, FornixSearch>
     }
   }
 }

@@ -2,8 +2,9 @@
 // this one fills the row. Typing stays here; Enter, Search and Clear post to the hooks module.
 import type { ClientModule } from 'claude-code'
 
-/** `isTerminal`: the CLI draws the bordered field 3 rows tall, so the buttons drop one row to its text line. */
-type Props = { value: string; placeholder: string; isTerminal?: boolean }
+/** `isTerminal`: the CLI draws the bordered field 3 rows tall, so the buttons drop one row to its text line.
+ *  `channel`: rides on every post, so the hooks module knows which search it is (absent: Activity's). */
+type Props = { value: string; placeholder: string; isTerminal?: boolean; channel?: string }
 type State = { text: string; seen: string; isFocused: boolean }
 
 const SearchBox: ClientModule<Props, State> = (props, surface) => {
@@ -16,7 +17,7 @@ const SearchBox: ClientModule<Props, State> = (props, surface) => {
     })
     surface.onKey(ev => {
       const s = now()
-      if (ev.key === 'return') return surface.post({ type: 'search', text: s.text })
+      if (ev.key === 'return') return surface.post({ type: 'search', text: s.text, channel: props.channel ?? null })
       let text = s.text
       if (ev.key === 'backspace' || ev.key === 'delete') text = text.slice(0, -1)
       else if (ev.key === 'space') text += ' '
@@ -46,13 +47,13 @@ const SearchBox: ClientModule<Props, State> = (props, surface) => {
         )}
       </Box>
       <Box flexDirection="row" gap={1} marginTop={props.isTerminal ? 1 : 0} alignSelf={props.isTerminal ? "flex-start" : "center"}>
-        <Button key="sb-go" label="Search" variant="primary" onPress={() => surface.post({ type: 'search', text: s.text })} />
+        <Button key="sb-go" label="Search" variant="primary" onPress={() => surface.post({ type: 'search', text: s.text, channel: props.channel ?? null })} />
         <Button
           key="sb-clear"
           label="Clear"
           onPress={() => {
             surface.setState({ ...s, text: '' })
-            surface.post({ type: 'clear' })
+            surface.post({ type: 'clear', channel: props.channel ?? null })
           }}
         />
       </Box>

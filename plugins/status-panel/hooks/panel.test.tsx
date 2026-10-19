@@ -67,8 +67,11 @@ test('the Fornix tab lists each fornix-<repo> server of .mcp.json with its sync 
     await ui.press({ key: 'tab-fornix' })
     await ui.press({ key: 'fornix-refresh' })
     const card = async (name: string) => (await ui.find({ type: 'Box', key: `fornix-${name}-card` }))?.text ?? ''
-    expect(await card('fornix-api')).toMatch(/fornix-api.* CONNECTED .*on · read-only.*3 in 1 scope.*2 recalled · 1 written/)
-    expect(await card('fornix-web')).toMatch(/fornix-web.* UNREACHABLE .*off.*0 recalled · 0 written.*No MCP server named "fornix-web"/)
+    expect(await card('fornix-api')).toMatch(/fornix-api.* CONNECTED .*3 in 1 scope.*2 recalled · 1 written/)
+    expect(await card('fornix-web')).toMatch(/fornix-web.* UNREACHABLE .*0 recalled · 0 written.*No MCP server named "fornix-web"/)
+    const variant = async (key: string) => (await ui.find({ type: 'Button', key }))?.props.variant
+    expect(await variant('fornix-fornix-api-sync-readonly')).toBe('primary') // each card reads its own flag
+    expect(await variant('fornix-fornix-web-sync-off')).toBe('primary')
     expect(await ui.find({ type: 'Button', key: 'fornix-other' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: 'Session tokens are refreshed by the gateway' })).toBeUndefined() // two servers: closed
     await ui.press({ key: 'fornix-fornix-api' })
@@ -78,6 +81,68 @@ test('the Fornix tab lists each fornix-<repo> server of .mcp.json with its sync 
     await ui.press({ key: 'tab-summary' })
     await ui.unmount()
   }
+})
+
+test('a server card flips sync through the .sync-on flag and searches its memories', async ($, on) => {
+  mock.clock(on)
+  on('session.cwd', () => ({ value: '/w' }))
+  on('session.model', () => ({ value: 'claude-test' }))
+  on('session.turns', () => ({ value: 1 }))
+  const mcpJson = { mcpServers: { fornix: { command: 'uv', args: ['run', '--directory', '.fornix', 'python', '-m', 'context_store.server', 'mcp'] } } }
+  let flag: string | undefined = 'full\n'
+  on('fs.read', ($, e) =>
+    e.path.endsWith('.mcp.json') ? { value: JSON.stringify(mcpJson) } : flag !== undefined && e.path.endsWith('.fornix/.sync-on') ? { value: flag } : { deny: 'ENOENT' },
+  )
+  const writes: string[] = []
+  on('fs.write', ($, e) => {
+    writes.push(`${e.path}=${e.text}`)
+    flag = e.text
+    return { value: undefined }
+  })
+  const runs: string[][] = []
+  on('process.run', ($, e) => {
+    runs.push([...e.argv])
+    flag = undefined
+    return { value: { exitCode: 0, stdout: '', stderr: '' } } as never
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  const block = (v: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify(v) }], isError: false } })
+  on('mcp.call', ($, e) =>
+    e.tool === 'scopes'
+      ? block([{ scope: 'main', count: 2, tags: {} }])
+      : e.args.query
+        ? block([{ id: 'm2', ts: '2026-10-01T00:00:00+00:00', text: 'Payments retry twice', tags: ['payments'], source: '', score: 0.834 }])
+        : block([{ id: 'm1', ts: '2026-10-19T00:00:00+00:00', text: 'Newest note', tags: [], source: '' }]),
+  )
+  const ui = await $.ui.mount({ plugin: 'status-panel', surface: 'desktop', ...PANE })
+  await ui.press({ key: 'tab-fornix' })
+  await ui.press({ key: 'fornix-refresh' })
+  const variant = async (key: string) => (await ui.find({ type: 'Button', key }))?.props.variant
+  expect(await variant('fornix-fornix-sync-full')).toBe('primary')
+  expect(await ui.find({ type: 'Text', text: 'Newest note' })).toBeDefined() // a lone server's card opens by itself
+
+  await ui.press({ key: 'fornix-fornix-sync-off' })
+  expect(runs).toEqual([['rm', '-f', '/w/.fornix/.sync-on']])
+  expect(await variant('fornix-fornix-sync-off')).toBe('primary')
+  expect(toasts.at(-1)).toMatch(/sync off\. Nothing was flushed/) // off from full skips the skill's final flush
+  await ui.press({ key: 'fornix-fornix-sync-readonly' })
+  expect(writes).toEqual(['/w/.fornix/.sync-on=readonly\n'])
+  expect(await variant('fornix-fornix-sync-readonly')).toBe('primary')
+
+  for (const ch of 'retry') await ui.key({ key: ch, in: 'fornix-fornix-search' })
+  await ui.key({ key: 'return', in: 'fornix-fornix-search' })
+  expect(await ui.find({ type: 'Text', text: /MATCHES FOR “retry” · 1/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Payments retry twice' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /score 0\.83 #payments/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'Newest note' })).toBeUndefined()
+  await ui.press({ key: 'sb-clear' })
+  expect(await ui.find({ type: 'Text', text: 'Newest note' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /MATCHES FOR/ })).toBeUndefined()
+  await ui.unmount()
 })
 
 test('the Fornix tab says when no fornix server is set up, and lists one once its tools are called', async ($, on) => {
