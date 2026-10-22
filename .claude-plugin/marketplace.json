@@ -14,6 +14,11 @@
       "name": "catppuccin-mocha",
       "source": "./plugins/catppuccin-mocha",
       "description": "Catppuccin Mocha colour theme for Claude Code"
+    },
+    {
+      "name": "progress-band",
+      "source": "./plugins/progress-band",
+      "description": "Loading bar above the prompt: task-list progress, plus one line per subagent"
     }
   ]
 }

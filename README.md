@@ -6,6 +6,7 @@ A side panel for [Claude Code](https://claude.com/claude-code) that shows what t
 | --- | --- |
 | `status-panel` | The **Status** side panel (`/status-panel`) |
 | `catppuccin-mocha` | A Catppuccin Mocha colour theme (pick it in `/theme`) |
+| `progress-band` | A loading bar above the prompt with the task list's progress and one line per subagent |
 
 ## What the panel shows
 
@@ -17,6 +18,14 @@ A side panel for [Claude Code](https://claude.com/claude-code) that shows what t
   - **Activity** – every tool call grouped by prompt (newest first): file reads with line numbers, edits as coloured diffs, command and tool output pretty-printed. Search box, **Load more** for earlier prompts, and each prompt heading scrolls the chat back to where it was sent.
   - **Fornix** – one card per [fornix](https://github.com/ZGA2519/fornix) project-memory MCP server in the working directory's `.mcp.json` (`fornix`, or `fornix-<repo>` per repo in a folder over several), plus any whose tools the session calls: connected or not, memories per scope, top tags, the newest memories, and how many memories this session recalled and wrote (↻ Refresh to re-read). **Off / Read-only / Full** switch that server's sync by writing or removing its `.sync-on` flag (Off skips `/context-stop-sync`'s final flush, and says so), and each card has a search box over that server's memories.
 
+## Progress band
+
+A band just above the prompt box that shows how far through its task list Claude is:
+
+- **Main bar** – step *n* of *total*, the current step and a percentage. On desktop, one rounded segment per step on a coral gradient, the active one pulsing; in the terminal, a thin gradient line. Green with ✓ when every step is done. Fed by the desktop app's task list, `TodoWrite`, or the `TaskCreate`/`TaskUpdate` tools.
+- **One line per subagent** – its type and task, its own to-do progress if it keeps one, how many tools it has called and the latest one, and a small bar (a sweeping glint when it has no list). Turns to ✓ when the subagent finishes.
+- **When it shows** – while a turn runs, and afterwards while a background subagent is still working. A finished list and finished subagents are cleared when the turn ends.
+
 ## Install
 
 In Claude Code (terminal), at the prompt:
@@ -24,6 +33,7 @@ In Claude Code (terminal), at the prompt:
 ```
 /plugin install status-panel --marketplace ZGA2519/claude-status-panel
 /plugin install catppuccin-mocha --marketplace ZGA2519/claude-status-panel
+/plugin install progress-band --marketplace ZGA2519/claude-status-panel
 ```
 
 Answer `y` to add the marketplace and pick a scope (user = every session).
