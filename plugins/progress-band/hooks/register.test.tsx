@@ -1,6 +1,6 @@
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
-import { lineCells, mix, segmentsSvg } from './register'
+import { elapsed, glintCells, lineCells, mix, segmentsSvg, toPlanInput } from './register'
 
 const BAND = {
   plugin: 'progress-band',
@@ -176,6 +176,92 @@ test('band stays up while idle until background subagents finish', async ($, on)
   await finished.unmount()
 })
 
+test('CLI: the band brings its own plan tool and drives the bar with it', async ($, on) => {
+  const registered: string[] = []
+  on('tool.register', (_, e) => {
+    registered.push(e.name)
+    return { value: { tool: `mcp__progress-band__${e.name}` } }
+  })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  expect(registered).toEqual([])
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  expect(registered).toEqual(['plan'])
+
+  const first = await $.tool.call({
+    tool: 'mcp__progress-band__plan',
+    items: [
+      { content: 'Read code', status: 'in_progress' },
+      { content: 'Write fix', status: 'pending' },
+      { content: 'Run tests', status: 'pending' },
+    ],
+  })
+  expect(first.result).toBe('Plan: step 1 of 3 (Read code).')
+  const second = await $.tool.call({ tool: 'mcp__progress-band__plan', advance: true })
+  expect(second.result).toBe('Plan: step 2 of 3 (Write fix).')
+
+  const term = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  const tt = (re: RegExp) => term.find({ type: 'Text', text: re }).then(n => n?.text)
+  expect(await tt(/%$/)).toBe(' 33%')
+  expect(await tt(/Write fix/)).toBe('Write fix')
+  await term.unmount()
+})
+
+test('CLI: the first tool result of a plan-less turn carries one reminder', async ($, on) => {
+  on('tool.register', (_, e) => ({ value: { tool: `mcp__progress-band__${e.name}` } }))
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('tool.call', () => ({ result: {} }))
+  mock.clock(on)
+
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  const first = await $.tool.call({ tool: 'Bash', command: 'ls' })
+  const second = await $.tool.call({ tool: 'Bash', command: 'pwd' })
+  expect(first.context?.some(c => c.includes('mcp__progress-band__plan'))).toBe(true)
+  expect(second.context ?? []).toEqual([])
+
+  await $.turn.start({ text: 'again', turnId: 't2' })
+  await $.tool.call({ tool: 'mcp__progress-band__plan', items: [{ content: 'a', status: 'in_progress' }] })
+  const withPlan = await $.tool.call({ tool: 'Bash', command: 'ls' })
+  expect(withPlan.context ?? []).toEqual([])
+})
+
+test('with no plan, a running turn shows the activity bar', async ($, on) => {
+  const clock = mock.clock(on)
+  on('turn.start', (_, e) => ({ turnId: e.turnId }))
+  on('turn.complete', () => ({ text: '' }))
+  on('tool.call', () => ({ result: {} }))
+  on('ui.render', ($, e) => {
+    const { Text } = $.ui.resolve(e)
+    return <Text>engine</Text>
+  })
+
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await $.tool.call({ tool: 'Read', file_path: '/a' })
+  await $.tool.call({ tool: 'Bash', command: 'ls' })
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...BAND, surface })
+    const t = (re: RegExp) => ui.find({ type: 'Text', text: re }).then(n => n?.text)
+    expect(await t(/^Working$/)).toBe('Working')
+    expect(await t(/tools ·/)).toBe('2 tools · 0s')
+    expect(await t(/^Bash$/)).toBe('Bash')
+    await ui.unmount()
+  }
+
+  await clock.advance(3000)
+  const later = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await later.find({ type: 'Text', text: /tools ·/ }))?.text).toBe('2 tools · 3s')
+  await later.unmount()
+
+  await $.turn.complete({ answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' })
+  const idle = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect((await idle.find({ type: 'Text', text: /engine/ }))?.text).toBe('engine')
+  await idle.unmount()
+})
+
 test('drawing helpers', () => {
   expect(mix('#000000', '#ffffff', 0.5)).toBe('#808080')
 
@@ -194,4 +280,18 @@ test('drawing helpers', () => {
   expect((svg.match(/<rect /g) ?? []).length).toBe(5) // 3 tracks + 1 fill + 1 pulse
   expect(svg.includes('<animate')).toBe(true)
   expect(segmentsSvg(items, false).includes('<animate')).toBe(false)
+
+  expect(elapsed(5_400)).toBe('5s')
+  expect(elapsed(75_000)).toBe('1m 15s')
+  const g = glintCells(8, 20, coral)
+  expect(g.before.length + g.glint.length + g.after.length).toBe(20)
+  expect(g.glint.length).toBe(6)
+  expect(glintCells(0, 20, coral).glint.length).toBe(0)
+
+  expect(toPlanInput({ items: [{ content: 'a', status: 'bogus' }, { nope: 1 }], done: [1, 'x'], start: 2.5 })).toEqual({
+    items: [{ content: 'a', status: 'pending' }],
+    advance: false,
+    done: [1],
+    start: undefined,
+  })
 })

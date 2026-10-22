@@ -1,10 +1,74 @@
 import { atom, read, update } from 'claude-code'
 import type { Register, StateDollar } from 'claude-code'
 
-import type { Agent, Item, Status } from '../types'
+import type { Activity, Agent, Item, Status } from '../types'
 
 const items = atom({ plugin: 'progress-band', key: 'items' } as const, [] as Item[])
 const agents = atom({ plugin: 'progress-band', key: 'agents' } as const, [] as Agent[])
+const activity = atom({ plugin: 'progress-band', key: 'activity' } as const, null as Activity | null)
+
+// Where Claude has no task-list tool of its own (the CLI), the band brings one.
+const PLAN_NAME = 'mcp__progress-band__plan'
+const NATIVE_PLAN_TOOLS = ['TodoWrite', 'TaskCreate', 'mcp__ccd_turn__update_plan']
+const PLAN_TOOL = {
+  name: 'plan',
+  description:
+    'Your task list for this session, shown to the user as a progress bar above the prompt. ' +
+    'Use it whenever a request takes three or more steps: first call with `items`, the whole plan in order ' +
+    'with the first step in_progress; then `advance: true` each time a step finishes (completes the ' +
+    'in_progress step, starts the next); finish the last step before your final answer. ' +
+    '`done` / `start` take 1-based step numbers for out-of-order changes. Skip it for quick one-step answers.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      items: {
+        type: 'array',
+        description: 'The whole plan, in order; replaces the previous one.',
+        items: {
+          type: 'object',
+          properties: {
+            content: { type: 'string', description: 'Short imperative step.' },
+            status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] },
+          },
+          required: ['content', 'status'],
+        },
+      },
+      advance: { type: 'boolean', description: 'Complete the in_progress step and start the next pending one.' },
+      done: { type: 'array', items: { type: 'integer' }, description: '1-based steps to mark completed.' },
+      start: { type: 'integer', description: '1-based step to mark in_progress.' },
+    },
+  },
+  isDeferred: false,
+} as const
+// ponytail: a system-prompt note would be cleaner, but the built-in security plugin skips a
+// user-installed plugin's prompt.compose and prompt.context hooks. Tool-result context gets
+// through, so the reminder rides on the first answered tool call of a plan-less turn.
+const PLAN_NUDGE =
+  `progress-band: the user is watching a progress bar driven by ${PLAN_NAME}. If this request takes ` +
+  'three or more steps, call that tool now with the whole plan (first step in_progress), then with ' +
+  '`advance: true` as each step finishes. If it is a quick one-step request, ignore this.'
+
+const STATUSES: readonly Status[] = ['pending', 'in_progress', 'completed']
+
+// The model's arguments, kept to the shape applyPlan reads.
+export const toPlanInput = (raw: Record<string, unknown>): PlanInput => {
+  const ints = (v: unknown) => (Array.isArray(v) ? v.filter((n): n is number => Number.isInteger(n)) : undefined)
+  const items = Array.isArray(raw.items)
+    ? raw.items.flatMap(it => {
+        const o = (it ?? {}) as { content?: unknown; status?: unknown }
+        if (typeof o.content !== 'string') return []
+        const status = STATUSES.find(st => st === o.status) ?? 'pending'
+        return [{ content: o.content, status }]
+      })
+    : undefined
+
+  return {
+    items,
+    advance: raw.advance === true,
+    done: ints(raw.done),
+    start: Number.isInteger(raw.start) ? (raw.start as number) : undefined,
+  }
+}
 
 const isOk = (r: { deny?: unknown; isError?: unknown }) => r.deny === undefined && !r.isError
 
@@ -163,7 +227,60 @@ export const lineCells = (frac: number, width: number, colors: readonly [string,
   return { cells, rest: '━'.repeat(width - cells.length) }
 }
 
+// Terminal activity bar: a short gradient glint walking along the line, one cell per tick.
+export const glintCells = (tick: number, width: number, colors: readonly [string, string]) => {
+  const len = Math.min(6, width)
+  const head = (tick % (width + len)) - len
+  const start = Math.max(0, head)
+  const end = Math.min(width, head + len)
+
+  return {
+    before: '━'.repeat(start),
+    glint: Array.from({ length: Math.max(0, end - start) }, (_, i) => ({
+      char: '━',
+      color: mix(colors[0], colors[1], (start + i - head) / Math.max(1, len - 1)),
+    })),
+    after: '━'.repeat(width - Math.max(start, end)),
+  }
+}
+
+export const elapsed = (ms: number) => {
+  const s = Math.max(0, Math.floor(ms / 1000))
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`
+}
+
 export const register: Register = on => {
+  let ticker: { cancel: () => void } | undefined
+  let hasPlanTool = false // registered in this session
+  let hasNativePlan = false // the session lists a task-list tool of its own
+  let isNudged = false // this turn's reminder went out
+
+  // The plan tool, in interactive sessions other than the desktop app (which has its own).
+  on('session.start', async ($, e, next) => {
+    const r = await next(e)
+    if (e.isInteractive && e.surface !== 'desktop') {
+      await $.tool.register(PLAN_TOOL)
+      hasPlanTool = true
+    }
+    return r
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: PLAN_NAME }, async ($, e) => {
+    const input = toPlanInput(e as Record<string, unknown>)
+    let after: Item[] = []
+    await editList($, e.agentId, list => (after = applyPlan(list, input)))
+    if (after.length === 0) return { result: 'The plan is empty: send `items` first.' }
+    const s = summary(after)
+    return {
+      result: s.isDone ? `Plan complete: ${s.total}/${s.total}.` : `Plan: step ${s.step} of ${s.total} (${s.label}).`,
+    }
+  }).catch(() => ({ result: 'progress-band could not update the plan.' }))
+
+  on('tool.describe', ($, e, next) => {
+    if (NATIVE_PLAN_TOOLS.includes(e.tool)) hasNativePlan = true
+    return next(e)
+  })
+
   // Terminal CLI: TodoWrite sends the whole list.
   on('tool.call', { tool: 'TodoWrite' }, async ($, e, next) => {
     const r = await next(e)
@@ -243,11 +360,19 @@ export const register: Register = on => {
 
   // Every tool call a subagent makes: count it and remember the latest.
   on('tool.call', async ($, e, next) => {
+    const tool = e.tool.replace(/^mcp__.*?__/, '')
     if (e.agentId) {
-      const tool = e.tool.replace(/^mcp__.*?__/, '')
       await setAgent($, e.agentId, a => ({ ...a, tools: a.tools + 1, lastTool: tool }))
+    } else {
+      await update($, activity, a => a && { ...a, tools: a.tools + 1, lastTool: tool })
     }
-    return next(e)
+    const r = await next(e)
+
+    // Once a turn, on the main loop's first answered call while there is no plan yet.
+    const isNudgeDue = !e.agentId && hasPlanTool && !hasNativePlan && !isNudged && e.tool !== PLAN_NAME
+    if (!isNudgeDue || r.deny !== undefined || r.isError || (await read($, items)).length > 0) return r
+    isNudged = true
+    return { ...r, context: [...(r.context ?? []), PLAN_NUDGE] }
   }).catch(($, e, next) => next(e))
 
   // A teammate wakes for another turn. A main turn starting drops rows of background
@@ -257,6 +382,14 @@ export const register: Register = on => {
       await setAgent($, e.agentId, a => ({ ...a, isDone: false }))
     } else {
       await update($, agents, all => all.filter(a => !a.isDone))
+      isNudged = false
+      const now = await $.clock.now()
+      await update($, activity, () => ({ startedAt: now, now, tools: 0 }))
+      ticker?.cancel()
+      // ponytail: one redraw a second while a turn runs, for the clock and the terminal glint
+      ticker = $.clock.every(1000, () => {
+        void update($, activity, a => a && { ...a, now: a.now + 1000 })
+      })
     }
     return next(e)
   })
@@ -273,6 +406,9 @@ export const register: Register = on => {
         await update($, items, () => [])
       }
       await update($, agents, all => all.filter(a => !a.isDone))
+      ticker?.cancel()
+      ticker = undefined
+      await update($, activity, () => null)
     }
     return next(e)
   })
@@ -280,9 +416,10 @@ export const register: Register = on => {
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const list = await read($, items)
     const subs = await read($, agents)
+    const act = e.props.isWorking && list.length === 0 ? await read($, activity) : null
     // Shown while a turn runs, or while a background subagent is still working.
     const isBusy = e.props.isWorking || subs.some(a => !a.isDone)
-    if (e.props.hasSurvey || !isBusy || (list.length === 0 && subs.length === 0)) {
+    if (e.props.hasSurvey || !isBusy || (list.length === 0 && subs.length === 0 && !act)) {
       return next(e)
     }
 
@@ -315,6 +452,25 @@ export const register: Register = on => {
                 alt={`${s.done} of ${s.total} steps done (${s.pct}%)`}
                 isInteractive={!s.isDone}
               />
+            </Box>
+          ) : act ? (
+            <Box flexDirection="column" gap="xs">
+              <Box flexDirection="row" justifyContent="space-between" alignItems="center" gap="sm">
+                <Box flexDirection="row" alignItems="center" gap="xs" flexShrink={1}>
+                  <Text size="footnote" weight="semibold" color={CORAL[0]}>
+                    Working
+                  </Text>
+                  {act.lastTool ? (
+                    <Text size="footnote" color="subtle" wrap="truncate-end">
+                      {act.lastTool}
+                    </Text>
+                  ) : null}
+                </Box>
+                <Text size="footnote" color="subtle" tabular>
+                  {`${act.tools} tool${act.tools === 1 ? '' : 's'} · ${elapsed(act.now - act.startedAt)}`}
+                </Text>
+              </Box>
+              <Svg source={activitySvg(false, 1600, 14)} alt="Claude is working" isInteractive />
             </Box>
           ) : null}
           {subs.map(a => {
@@ -350,6 +506,26 @@ export const register: Register = on => {
 
     const { Box, Text } = $.ui.resolve(e)
     const mainLine = (() => {
+      if (!s && act) {
+        const width = Math.max(12, Math.min(36, e.props.bodyColumns - 40))
+        const g = glintCells(Math.floor((act.now - act.startedAt) / 1000), width, CORAL)
+
+        return (
+          <Box flexDirection="row" gap={1}>
+            <Text color={CORAL[0]}>●</Text>
+            <Box flexDirection="row">
+              <Text color="inactive">{g.before}</Text>
+              {g.glint.map(c => (
+                <Text color={c.color}>{c.char}</Text>
+              ))}
+              <Text color="inactive">{g.after}</Text>
+            </Box>
+            <Text bold color={CORAL[0]}>Working</Text>
+            <Text dimColor>{`${act.tools} tool${act.tools === 1 ? '' : 's'} · ${elapsed(act.now - act.startedAt)}`}</Text>
+            <Text wrap="truncate-end">{act.lastTool ?? ''}</Text>
+          </Box>
+        )
+      }
       if (!s) return null
       // ponytail: leaves ~22 cells for glyph/percent/count plus up to 30 of label
       const width = Math.max(12, Math.min(36, e.props.bodyColumns - 22 - Math.min(s.label.length, 30)))

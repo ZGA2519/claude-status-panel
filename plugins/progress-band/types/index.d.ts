@@ -9,9 +9,11 @@ export type Agent = {
   lastTool?: string
   items: Item[]
 }
+// The main loop's turn while it has no plan: drawn as an activity bar.
+export type Activity = { startedAt: number; now: number; tools: number; lastTool?: string }
 
 declare module 'claude-code' {
   interface PluginState {
-    'progress-band': { items: Item[]; agents: Agent[] }
+    'progress-band': { items: Item[]; agents: Agent[]; activity: Activity | null }
   }
 }

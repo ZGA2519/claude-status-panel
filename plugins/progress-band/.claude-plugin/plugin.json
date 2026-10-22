@@ -1,6 +1,6 @@
 {
   "name": "progress-band",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Loading bar above the prompt showing overall task-list progress",
   "types": "./types/index.d.ts"
 }

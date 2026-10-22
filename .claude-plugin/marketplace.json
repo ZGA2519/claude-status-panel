@@ -18,7 +18,7 @@
     {
       "name": "progress-band",
       "source": "./plugins/progress-band",
-      "description": "Loading bar above the prompt: task-list progress, plus one line per subagent"
+      "description": "Loading bar above the prompt: plan progress or live activity, plus one line per subagent"
     }
   ]
 }
