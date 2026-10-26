@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, McpToolResult, Register } from 'claude-code'
 
-import type { Call, FornixMemory, FornixSearch, FornixServer, MascotAssets, Prompt, SessionSummary, Stats, Tab } from '../types'
-import { describe, fmtDur, fmtNum, matches, mcpRows, prettyTool, rel } from './format'
+import type { Account, Call, FornixMemory, FornixSearch, FornixServer, MascotAssets, Prompt, SessionSummary, Stats, Tab } from '../types'
+import { accountLines, accountOf, describe, fmtDur, fmtNum, matches, mcpRows, prettyTool, rel } from './format'
 import { emojiOf, iconFor, svgOf } from './icons'
 import type { IconKey } from './icons'
 import { BUILD_MASCOT_PY } from './build-mascot-script'
@@ -28,6 +28,7 @@ const mascotRev = atom({ plugin: 'status-panel', key: 'mascotRev' } as const, 0)
 const beat = atom({ plugin: 'status-panel', key: 'beat' } as const, 0) // the CLI mascot's frame; only the CLI view reads it
 const fornix = atom({ plugin: 'status-panel', key: 'fornixServers' } as const, [])
 const fornixSearch = atom({ plugin: 'status-panel', key: 'fornixSearch' } as const, {})
+const account = atom({ plugin: 'status-panel', key: 'account' } as const, null)
 
 const TINT = { running: 'warning', done: 'success', error: 'error' } as const
 const BADGE = { running: '● RUNNING', done: '✓ DONE', error: '✕ FAILED' } as const
@@ -132,6 +133,27 @@ async function setSync($: EngineInterface, sv: FornixServer, mode: 'off' | 'read
   )
 }
 
+/** How Claude Code is signed in: `claude auth status`, else the login record in .claude.json and ANTHROPIC_API_KEY. */
+async function readAccount($: EngineInterface): Promise<void> {
+  const at = await $.clock.now()
+  // it prints its JSON whether or not it exits 0 (signed out exits 1)
+  const ran = await $.process.run(['claude', 'auth', 'status', '--json'], { timeoutMs: 15_000 }).catch(() => undefined)
+  let found: Account | undefined = ran ? accountOf(ran.stdout, at) : undefined
+  if (!found || (found.method !== 'none' && !found.email)) {
+    // ponytail: no `claude` on PATH (some desktop installs), or a token login that prints no email
+    const [dir, home, key] = await Promise.all([$.env.get('CLAUDE_CONFIG_DIR'), $.env.get('HOME'), $.env.get('ANTHROPIC_API_KEY')])
+    const login = await $.fs
+      .read(`${dir ?? home ?? '~'}/.claude.json`)
+      .then(t => JSON.parse(String(t))?.oauthAccount, () => undefined)
+    const email = typeof login?.emailAddress === 'string' ? login.emailAddress : undefined
+    const org = typeof login?.organizationName === 'string' ? login.organizationName : undefined
+    found = found
+      ? { ...found, email: found.email ?? email, org: found.org ?? org }
+      : { method: key ? 'api_key' : login ? 'claude.ai' : 'none', keySource: key ? 'ANTHROPIC_API_KEY' : undefined, email, org, checkedAt: at }
+  }
+  await update($, account, () => found)
+}
+
 /** Re-read every fornix server: the configured ones and any whose tools were called. One check at a time. */
 let checking: Promise<void> | undefined
 const checkFornix = ($: EngineInterface) => (checking ??= readFornix($).finally(() => (checking = undefined)))
@@ -207,6 +229,7 @@ export const register: Register = on => {
     })
     void $.ui.open({ id: PANE, title: 'Status' })
     void checkFornix($)
+    void readAccount($)
 
     return next(e)
   })
@@ -345,6 +368,7 @@ export const register: Register = on => {
     const sm = await read($, summary)
     const servers = await read($, fornix)
     const found = await read($, fornixSearch)
+    const acct = await read($, account)
     await read($, mascotRev) // redraw when a mascot is uploaded or reset
     const pet = custom ?? DEFAULT_MASCOT // undefined: no mascot until one is picked
     const lim = await read($, limit)
@@ -892,6 +916,34 @@ export const register: Register = on => {
             </Text>
             <Text dimColor> ↗</Text>
           </Button>
+        </Box>
+
+        <Box key="account" flexDirection="column" borderStyle="round" borderColor="suggestion" paddingX={1}>
+          <Box flexDirection="row" gap={1} alignItems="center">
+            {icon('user', 18)}
+            <Text dimColor bold>
+              SIGNED IN AS
+            </Text>
+            <Box flexGrow={1} />
+            <Button key="account-refresh" plain onPress={() => readAccount($)}>
+              <Text color="suggestion">↻</Text>
+            </Button>
+          </Box>
+          {acct ? (
+            <Box flexDirection="column">
+              <Text bold color="suggestion" wrap="truncate-end">
+                {accountLines(acct).login}
+              </Text>
+              <Text>
+                <Text dimColor>Plan </Text>
+                {accountLines(acct).plan}
+              </Text>
+            </Box>
+          ) : (
+            <Text dimColor italic>
+              checking…
+            </Text>
+          )}
         </Box>
 
         {tabBar}

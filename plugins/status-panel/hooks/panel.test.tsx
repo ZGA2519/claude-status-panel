@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { describe, human, matches, mcpRows, patchToDiff } from './format'
+import { accountLines, accountOf, describe, human, matches, mcpRows, patchToDiff } from './format'
 import { DEFAULT_MASCOT, mascot, mascotText } from './mascot'
 import type { MascotAssets } from '../types'
 
@@ -372,6 +372,36 @@ test('the statistics tiles open what was read, written and called, and how often
     expect((await ui.findAll({ type: 'Text', text: 'Read' })).length).toBe(2) // its own list, beside Most used
     for (const k of ['stats-read', 'stats-written', 'stats-tools']) await ui.press({ key: k }) // closed again: shared by surfaces
     expect(await ui.find({ type: 'Text', text: 'src/a.ts' })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('accountOf reads `claude auth status --json`, and accountLines names the login and plan', async () => {
+  const pro = accountOf(JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', email: 'a@b.co', orgName: 'Acme', subscriptionType: 'max' }), 5)
+  expect(pro).toEqual({ method: 'claude.ai', email: 'a@b.co', org: 'Acme', plan: 'max', keySource: undefined, provider: 'firstParty', checkedAt: 5 })
+  expect(accountLines(pro!)).toEqual({ login: 'Claude account · a@b.co', plan: 'Claude Max' })
+  const key = accountOf(JSON.stringify({ loggedIn: true, authMethod: 'api_key', apiProvider: 'firstParty', apiKeySource: 'ANTHROPIC_API_KEY' }), 0)!
+  expect(accountLines(key)).toEqual({ login: 'API key · ANTHROPIC_API_KEY', plan: 'API · pay as you go' })
+  expect(accountLines(accountOf('{"loggedIn":true,"authMethod":"third_party","apiProvider":"bedrock"}', 0)!).login).toBe('Cloud provider · Amazon Bedrock')
+  expect(accountLines(accountOf('{"loggedIn":false,"authMethod":"none"}', 0)!).login).toBe('Not signed in')
+  expect(accountOf('not json', 0)).toBeUndefined()
+})
+
+test('the pane shows the signed-in account under the working directory', async ($, on) => {
+  mock.clock(on)
+  on('session.cwd', () => ({ value: '/w' }))
+  on('session.model', () => ({ value: 'claude-test' }))
+  on('session.turns', () => ({ value: 1 }))
+  on('fs.read', () => ({ deny: 'ENOENT' }))
+  const status = { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', email: 'me@example.com', orgName: 'Me', subscriptionType: 'pro' }
+  on('process.run', ($, e) =>
+    e.argv[0] === 'claude' ? ({ value: { exitCode: 0, stdout: JSON.stringify(status), stderr: '' } } as never) : ({ deny: 'no' } as never),
+  )
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'status-panel', surface, ...PANE })
+    await ui.press({ key: 'account-refresh' })
+    const box = (await ui.find({ type: 'Box', key: 'account' }))?.text ?? ''
+    expect(box).toMatch(/SIGNED IN AS.*Claude account · me@example\.com.*Plan.*Claude Pro/s)
     await ui.unmount()
   }
 })

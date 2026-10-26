@@ -1,4 +1,4 @@
-import type { Call, Section } from '../types'
+import type { Account, Call, Section } from '../types'
 
 // ponytail: per-section caps keep $.state small; raise if a panel needs more
 const MAX_LINES = 150
@@ -161,3 +161,53 @@ export function fmtDur(ms: number): string {
 }
 
 export const fmtNum = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n))
+
+const str = (v: unknown) => (typeof v === 'string' && v !== '' ? v : undefined)
+
+/** `claude auth status --json` as the panel keeps it; undefined when the text is not that JSON. */
+export function accountOf(json: string, at: number): Account | undefined {
+  let d: any
+  try {
+    d = JSON.parse(json)
+  } catch {
+    return undefined
+  }
+  if (typeof d?.authMethod !== 'string') return undefined
+  return {
+    method: d.loggedIn === false ? 'none' : d.authMethod,
+    email: str(d.email),
+    org: str(d.orgName),
+    plan: str(d.subscriptionType),
+    keySource: str(d.apiKeySource),
+    provider: str(d.apiProvider),
+    checkedAt: at,
+  }
+}
+
+const PROVIDERS: Record<string, string> = { bedrock: 'Amazon Bedrock', vertex: 'Google Vertex AI', foundry: 'Microsoft Foundry', gateway: 'a gateway' }
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+
+/** The account section's two lines: how the session is signed in, and on what plan. */
+export function accountLines(a: Account): { login: string; plan: string } {
+  const who = a.email ?? a.org
+  switch (a.method) {
+    case 'claude.ai':
+      return { login: who ? `Claude account · ${who}` : 'Claude account', plan: a.plan ? `Claude ${cap(a.plan)}` : 'Plan not recorded' }
+    case 'oauth_token':
+      return { login: who ? `OAuth token · ${who}` : 'OAuth token', plan: a.plan ? `Claude ${cap(a.plan)}` : 'Subscription (plan not recorded)' }
+    case 'api_key':
+    case 'api_key_helper':
+      return {
+        login: `API key${a.keySource ? ` · ${a.keySource}` : ''}${who ? ` · ${who}` : ''}`,
+        plan: 'API · pay as you go',
+      }
+    case 'third_party': {
+      const via = a.provider ? (PROVIDERS[a.provider] ?? a.provider) : 'a cloud provider'
+      return { login: `Cloud provider · ${via}`, plan: `Billed by ${via}` }
+    }
+    case 'none':
+      return { login: 'Not signed in', plan: '—' }
+    default:
+      return { login: who ? `${a.method} · ${who}` : a.method, plan: a.plan ? `Claude ${cap(a.plan)}` : '—' }
+  }
+}
