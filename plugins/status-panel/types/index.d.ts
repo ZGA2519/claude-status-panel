@@ -88,6 +88,21 @@ export type FornixServer = {
   written: number
 }
 
+/** How Claude Code is signed in, from `claude auth status` (or the login record in .claude.json when that cannot run). */
+export type Account = {
+  /** `claude auth status`'s authMethod: claude.ai, oauth_token, api_key, api_key_helper, third_party, none, or a newer word. */
+  method: string
+  email?: string
+  org?: string
+  /** The subscription: pro, max, team, enterprise; absent for an API key or when the login did not record one. */
+  plan?: string
+  /** Where an API key comes from (ANTHROPIC_API_KEY, apiKeyHelper, /login managed key). */
+  keySource?: string
+  /** firstParty, bedrock, vertex, foundry, gateway… */
+  provider?: string
+  checkedAt: number
+}
+
 export type Tab = 'summary' | 'stats' | 'activity' | 'fornix'
 
 declare module 'claude-code' {
@@ -108,6 +123,7 @@ declare module 'claude-code' {
       stats: Stats
       fornixServers: FornixServer[]
       fornixSearch: Record<string, FornixSearch>
+      account: Account | null
     }
   }
 }

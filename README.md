@@ -12,6 +12,7 @@ A side panel for [Claude Code](https://claude.com/claude-code) that shows what t
 
 - **Mascot** of your choice that dances while Claude is working: click **🖼 Change mascot** and pick any GIF (it plays on desktop and becomes coloured block art in the terminal). None is bundled, so the slot stays blank until you pick one; **✕ Remove** clears it.
 - **Working directory**, clickable to open it in Finder.
+- **Signed in as** – how Claude Code is logged in (Claude account and its email, OAuth token, API key and where it comes from, or a cloud provider) and the plan (Claude Pro / Max / Team / Enterprise, or pay-as-you-go API), read from `claude auth status`; ↻ re-checks it.
 - Four tabs:
   - **Summary** – a short running summary of the session, rewritten after each prompt (↻ Refresh to redo it now).
   - **Statistics** – files read and written, tool calls (click a tile to list each file or tool and how many times), lines added/removed, failures, tool time, top tools, prompts, tokens, session age.
