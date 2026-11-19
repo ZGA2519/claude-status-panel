@@ -1,4 +1,4 @@
-import type { Account, Call, Section } from '../types'
+import type { Account, Call, FornixServer, Section } from '../types'
 
 // ponytail: per-section caps keep $.state small; raise if a panel needs more
 const MAX_LINES = 150
@@ -210,4 +210,10 @@ export function accountLines(a: Account): { login: string; plan: string } {
     default:
       return { login: who ? `${a.method} · ${who}` : a.method, plan: a.plan ? `Claude ${cap(a.plan)}` : '—' }
   }
+}
+
+/** The mode a fornix `.sync-on` flag holds, read as fornix's hook reads it: whitespace dropped, unknown text is full. */
+export const syncModeOf = (text: unknown): NonNullable<FornixServer['sync']> => {
+  const t = String(text).replace(/\s/g, '')
+  return t === 'readonly' || t === 'detail' ? t : 'full'
 }

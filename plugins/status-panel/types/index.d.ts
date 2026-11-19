@@ -78,8 +78,10 @@ export type FornixServer = {
   /** 'ok': it answered; 'down': the call failed (not connected, not approved or not running). */
   state: 'unknown' | 'ok' | 'down'
   error?: string
-  /** The `.sync-on` flag: absent off, "readonly" recall only, anything else full; unknown without `dir`. */
-  sync?: 'off' | 'full' | 'readonly'
+  /** The `.sync-on` flag: absent off, "readonly" recall only, "detail" full plus a log of every prompt and tool call, anything else full; unknown without `dir`. */
+  sync?: 'off' | 'full' | 'readonly' | 'detail'
+  /** Whether detail mode logs this server: fornix's hook logs only the store of the folder Claude Code was opened in (`<cwd>/.fornix`). */
+  logsDetail?: boolean
   scopes: { scope: string; count: number; tags: Record<string, number> }[]
   recent: FornixMemory[]
   checkedAt: number
