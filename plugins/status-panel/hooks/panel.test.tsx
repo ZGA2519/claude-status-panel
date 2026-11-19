@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { accountLines, accountOf, describe, human, matches, mcpRows, patchToDiff } from './format'
+import { accountLines, accountOf, describe, human, matches, mcpRows, patchToDiff, syncModeOf } from './format'
 import { DEFAULT_MASCOT, mascot, mascotText } from './mascot'
 import type { MascotAssets } from '../types'
 
@@ -43,6 +43,14 @@ test('mcpRows unwraps every shape a list comes back in', async () => {
   expect(mcpRows({ content: [{ text: 'not json' }] })).toEqual([])
 })
 
+test('syncModeOf reads a .sync-on flag the way fornix\'s hook does', async () => {
+  expect(syncModeOf('readonly\n')).toBe('readonly')
+  expect(syncModeOf(' detail \n')).toBe('detail')
+  expect(syncModeOf('full\n')).toBe('full')
+  expect(syncModeOf('')).toBe('full') // an empty flag is full sync
+  expect(syncModeOf('something else')).toBe('full')
+})
+
 test('search matches every word anywhere in a task', async () => {
   const call = { id: '1', tool: 'mcp__srv__list', status: 'done', summary: 'src/app.ts', sections: [{ label: 'output', source: 'rows: 3' }] } as const
   expect(matches({ ...call, sections: [...call.sections] }, 'srv APP')).toBe(true)
@@ -58,7 +66,11 @@ test('the Fornix tab lists each fornix-<repo> server of .mcp.json with its sync 
   const server = (dir: string) => ({ command: 'uv', args: ['run', '--directory', dir, 'python', '-m', 'context_store.server', 'mcp'] })
   const mcpJson = { mcpServers: { 'fornix-api': server('/w/api/.fornix'), 'fornix-web': server('/w/web/.fornix'), other: { command: 'x' } } }
   on('fs.read', ($, e) =>
-    e.path.endsWith('.mcp.json') ? { value: JSON.stringify(mcpJson) } : e.path === '/w/api/.fornix/.sync-on' ? { value: 'readonly\n' } : { deny: 'ENOENT' },
+    e.path.endsWith('.mcp.json') ? { value: JSON.stringify(mcpJson) } : e.path === '/w/api/.fornix/.sync-on'
+        ? { value: 'readonly\n' }
+        : e.path === '/w/web/.fornix/.sync-on'
+          ? { value: 'detail\n' }
+          : { deny: 'ENOENT' },
   )
   const block = (v: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify({ result: v }) }], isError: false } })
   on('mcp.call', ($, e) =>
@@ -82,7 +94,9 @@ test('the Fornix tab lists each fornix-<repo> server of .mcp.json with its sync 
     expect(await card('fornix-web')).toMatch(/fornix-web.* UNREACHABLE .*0 recalled · 0 written.*No MCP server named "fornix-web"/)
     const variant = async (key: string) => (await ui.find({ type: 'Button', key }))?.props.variant
     expect(await variant('fornix-fornix-api-sync-readonly')).toBe('primary') // each card reads its own flag
-    expect(await variant('fornix-fornix-web-sync-off')).toBe('primary')
+    expect(await variant('fornix-fornix-web-sync-detail')).toBe('primary')
+    expect(await card('fornix-web')).toMatch(/Detail log.*not logged: fornix logs only a repo opened on its own/) // a fornix-<repo> store has no log
+    expect(await card('fornix-api')).not.toMatch(/Detail log/)
     expect(await ui.find({ type: 'Button', key: 'fornix-other' })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: 'Session tokens are refreshed by the gateway' })).toBeUndefined() // two servers: closed
     await ui.press({ key: 'fornix-fornix-api' })
@@ -124,7 +138,7 @@ test('a server card flips sync through the .sync-on flag and searches its memori
   const block = (v: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify(v) }], isError: false } })
   on('mcp.call', ($, e) =>
     e.tool === 'scopes'
-      ? block([{ scope: 'main', count: 2, tags: {} }])
+      ? block([{ scope: 'main', count: 2, tags: {} }, { scope: 'detail', count: 4, tags: { detail: 4 } }])
       : e.args.query
         ? block([{ id: 'm2', ts: '2026-10-01T00:00:00+00:00', text: 'Payments retry twice', tags: ['payments'], source: '', score: 0.834 }])
         : block([{ id: 'm1', ts: '2026-10-19T00:00:00+00:00', text: 'Newest note', tags: [], source: '' }]),
@@ -143,6 +157,16 @@ test('a server card flips sync through the .sync-on flag and searches its memori
   await ui.press({ key: 'fornix-fornix-sync-readonly' })
   expect(writes).toEqual(['/w/.fornix/.sync-on=readonly\n'])
   expect(await variant('fornix-fornix-sync-readonly')).toBe('primary')
+  await ui.press({ key: 'fornix-fornix-sync-detail' })
+  expect(writes.at(-1)).toBe('/w/.fornix/.sync-on=detail\n')
+  expect(await variant('fornix-fornix-sync-detail')).toBe('primary')
+  expect(toasts.at(-1)).toMatch(/fornix: sync on in detail mode, logging every prompt and tool call/)
+  await ui.press({ key: 'fornix-refresh' }) // the flag reads back as detail, with the log's size
+  expect(await variant('fornix-fornix-sync-detail')).toBe('primary')
+  expect((await ui.find({ type: 'Box', key: 'fornix-fornix-card' }))?.text).toMatch(/Detail log.*4 actions logged/)
+  await ui.press({ key: 'fornix-fornix-sync-off' })
+  expect(toasts.at(-1)).toMatch(/sync off\. Nothing was flushed/) // detail is full plus a log, so off skips the flush too
+  await ui.press({ key: 'fornix-fornix-sync-readonly' })
 
   for (const ch of 'retry') await ui.key({ key: ch, in: 'fornix-fornix-search' })
   await ui.key({ key: 'return', in: 'fornix-fornix-search' })

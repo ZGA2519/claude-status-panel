@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, McpToolResult, Register } from 'claude-code'
 
 import type { Account, Call, FornixMemory, FornixSearch, FornixServer, MascotAssets, Prompt, SessionSummary, Stats, Tab } from '../types'
-import { accountLines, accountOf, describe, fmtDur, fmtNum, matches, mcpRows, prettyTool, rel } from './format'
+import { accountLines, accountOf, describe, fmtDur, fmtNum, matches, mcpRows, prettyTool, rel, syncModeOf } from './format'
 import { emojiOf, iconFor, svgOf } from './icons'
 import type { IconKey } from './icons'
 import { BUILD_MASCOT_PY } from './build-mascot-script'
@@ -77,11 +77,18 @@ const memoryOf = (r: any): FornixMemory => ({
 })
 const memoriesOf = (r: McpToolResult) => mcpRows(r).filter(m => m?.id !== undefined).map(memoryOf)
 
+type SyncMode = NonNullable<FornixServer['sync']>
+
+/** A store folder as an absolute path, without a trailing slash. */
+const storePath = (dir: string, cwd: string) => (dir.startsWith('/') ? dir : `${cwd}/${dir}`).replace(/\/+$/, '').replace(/\/\.\//g, '/')
+
 /** Ask one fornix server for its scopes and newest memories, and read the sync flag in its store folder. */
 async function probe($: EngineInterface, name: string, dir: string | undefined, at: number): Promise<FornixServer> {
-  const sync: FornixServer['sync'] =
-    dir === undefined ? undefined : await $.fs.read(`${dir}/.sync-on`).then(t => (String(t).trim() === 'readonly' ? 'readonly' : 'full'), () => 'off')
-  const base = { name, dir, sync, checkedAt: at, recalled: 0, written: 0 }
+  const sync: FornixServer['sync'] = dir === undefined ? undefined : await $.fs.read(`${dir}/.sync-on`).then(syncModeOf, () => 'off')
+  const cwd = (await $.session.cwd()).replace(/\/+$/, '')
+  // ponytail: fornix's hook logs only $CLAUDE_PROJECT_DIR/.fornix; a fornix-<repo> store under a folder over several syncs detail as full
+  const logsDetail = dir === undefined ? undefined : storePath(dir, cwd) === `${cwd}/.fornix`
+  const base = { name, dir, sync, logsDetail, checkedAt: at, recalled: 0, written: 0 }
   try {
     const [sc, sel] = await Promise.all([$.mcp.call(name, 'scopes'), $.mcp.call(name, 'select', { query: '', k: 5 })])
     if (sc.isError || sel.isError) throw failed(sc.isError ? sc : sel)
@@ -110,9 +117,9 @@ async function searchFornix($: EngineInterface, name: string, query: string): Pr
 }
 
 /** Flip a server's sync: the `.sync-on` flag fornix's prompt hook reads, written or removed in its store folder. */
-async function setSync($: EngineInterface, sv: FornixServer, mode: 'off' | 'readonly' | 'full'): Promise<void> {
+async function setSync($: EngineInterface, sv: FornixServer, mode: SyncMode): Promise<void> {
   if (sv.dir === undefined) return
-  const flag = `${sv.dir.startsWith('/') ? sv.dir : `${await $.session.cwd()}/${sv.dir}`}/.sync-on`
+  const flag = `${storePath(sv.dir, await $.session.cwd())}/.sync-on`
   try {
     if (mode !== 'off') await $.fs.write(flag, `${mode}\n`)
     else {
@@ -124,16 +131,22 @@ async function setSync($: EngineInterface, sv: FornixServer, mode: 'off' | 'read
     return void $.ui.toast(`Could not change sync for ${sv.name}: ${errText(err)}`)
   }
   await update($, fornix, list => list.map(s => (s.name === sv.name ? { ...s, sync: mode } : s)))
+  const on = {
+    full: 'on',
+    readonly: 'on, read-only',
+    detail: sv.logsDetail
+      ? 'on in detail mode, logging every prompt and tool call to the detail scope,'
+      : 'on in detail mode, which logs only a repo opened on its own: this one syncs as Full with no log,',
+  }
   void $.ui.toast(
     mode !== 'off'
-      ? `${sv.name}: sync ${mode === 'full' ? 'on' : 'on, read-only'} from the next prompt`
-      : sv.sync === 'full'
+      ? `${sv.name}: sync ${on[mode]} from the next prompt`
+      : sv.sync === 'full' || sv.sync === 'detail'
         ? `${sv.name}: sync off. Nothing was flushed: /context-stop-sync stores what is left first`
         : `${sv.name}: sync off`,
   )
 }
 
-/** How Claude Code is signed in: `claude auth status`, else the login record in .claude.json and ANTHROPIC_API_KEY. */
 async function readAccount($: EngineInterface): Promise<void> {
   const at = await $.clock.now()
   // it prints its JSON whether or not it exits 0 (signed out exits 1)
@@ -746,7 +759,7 @@ export const register: Register = on => {
       ok: { tint: 'success', badge: '● CONNECTED' },
       down: { tint: 'error', badge: '✕ UNREACHABLE' },
     } as const
-    const SYNC = { off: 'Off', readonly: 'Read-only', full: 'Full' } as const
+    const SYNC = { off: 'Off', readonly: 'Read-only', full: 'Full', detail: 'Detail' } as const
     const checkedAt = Math.max(0, ...servers.map(sv => sv.checkedAt))
     const serverCard = (sv: FornixServer) => {
       const id = `fornix-${sv.name}`
@@ -787,8 +800,8 @@ export const register: Register = on => {
           {sv.sync && (
             <Box key={`${id}-sync`} flexDirection="row" justifyContent="space-between" alignItems="center" gap={2} flexWrap="wrap">
               <Text dimColor>Sync</Text>
-              <Box flexDirection="row" gap={1}>
-                {(['off', 'readonly', 'full'] as const).map(m => (
+              <Box flexDirection="row" gap={1} flexWrap="wrap">
+                {(['off', 'readonly', 'full', 'detail'] as const).map(m => (
                   <Button key={`${id}-sync-${m}`} label={SYNC[m]} variant={sv.sync === m ? 'primary' : 'secondary'} onPress={() => setSync($, sv, m)} />
                 ))}
               </Box>
@@ -796,6 +809,15 @@ export const register: Register = on => {
           )}
           {row('Memories', sv.state === 'ok' ? `${sv.scopes.reduce((n, sc) => n + sc.count, 0)} in ${sv.scopes.length} scope${sv.scopes.length === 1 ? '' : 's'}` : '—')}
           {row('This session', `${sv.recalled} recalled · ${sv.written} written`)}
+          {sv.sync === 'detail' &&
+            row(
+              'Detail log',
+              !sv.logsDetail
+                ? 'not logged: fornix logs only a repo opened on its own'
+                : sv.state === 'ok'
+                  ? `${sv.scopes.find(sc => sc.scope === 'detail')?.count ?? 0} actions logged`
+                  : '—',
+            )}
           {sv.state === 'down' && <Text dimColor>{sv.error ? `${sv.error} · ` : ''}reconnect it in /mcp</Text>}
           {isOpen && sv.state === 'ok' && (
             <Box flexDirection="column" gap={1} marginTop={1}>
